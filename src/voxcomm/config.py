@@ -31,6 +31,7 @@ class AppConfig:
     llm_provider: str = "ollama"
     llm_url: str = "http://127.0.0.1:11434"
     llm_model: str = ""
+    llm_thinking: str = ""
     ollama_api_key: str = ""
     ptt_key: str = "F9"
     sample_rate: int = 16000

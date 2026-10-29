@@ -128,10 +128,10 @@ async def transcribe(audio: bytes, url: str, sample_rate: int = 16000, language:
         await writer.wait_closed()
 
 
-async def speak(text: str, url: str, voice: str = "") -> tuple[bytes, int]:
+async def speak_stream(text: str, url: str, voice: str = ""):
+    """Liefert (PCM, Samplerate)-Chunks, sobald der Dienst sie sendet."""
     host, port = _address(url)
     reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=5)
-    chunks: list[bytes] = []
     sample_rate = 22050
     try:
         data = {"text": text}
@@ -141,11 +141,11 @@ async def speak(text: str, url: str, voice: str = "") -> tuple[bytes, int]:
         while True:
             event, payload = await asyncio.wait_for(_receive(reader), timeout=60)
             if event.get("type") == "audio-chunk":
-                chunks.append(payload)
+                yield payload, sample_rate
             elif event.get("type") == "audio-start":
                 sample_rate = int(event.get("data", {}).get("rate", sample_rate))
             elif event.get("type") == "audio-stop":
-                return b"".join(chunks), sample_rate
+                return
             elif event.get("type") == "error":
                 raise RuntimeError(event.get("data", {}).get("text", "Wyoming synthesis failed"))
     finally:
@@ -157,5 +157,15 @@ def transcribe_sync(audio: bytes, url: str, sample_rate: int = 16000, language: 
     return asyncio.run(transcribe(audio, url, sample_rate, language))
 
 
-def speak_sync(text: str, url: str, voice: str = "") -> tuple[bytes, int]:
-    return asyncio.run(speak(text, url, voice))
+def speak_stream_sync(text: str, url: str, voice: str = ""):
+    loop = asyncio.new_event_loop()
+    stream = speak_stream(text, url, voice)
+    try:
+        while True:
+            try:
+                yield loop.run_until_complete(stream.__anext__())
+            except StopAsyncIteration:
+                return
+    finally:
+        loop.run_until_complete(stream.aclose())
+        loop.close()

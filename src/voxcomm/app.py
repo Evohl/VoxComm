@@ -14,15 +14,16 @@ from PySide6.QtWidgets import (
     QPlainTextEdit, QPushButton, QSpinBox, QSystemTrayIcon, QTextEdit, QToolButton, QVBoxLayout, QWidget,
 )
 
-from voxcomm.audio import play_pcm, record_until_released, save_wav
+from voxcomm.audio import play_stream, prefetch, record_until_released, save_wav
 from voxcomm.branding import APP_ID, APP_NAME, install_launcher, make_app_icon
 from voxcomm.config import AppConfig, load_config, save_config
 from voxcomm.mangohud import publish_status
 from voxcomm.providers import cloud, openai_tts, whisper_cpp
-from voxcomm.providers.llm import chat, list_models
-from voxcomm.providers.wyoming import filter_voices, list_voices, speak_sync, transcribe_sync, voice_language
+from voxcomm.providers.llm import chat, list_models, thinking_options
+from voxcomm.providers.wyoming import filter_voices, list_voices, speak_stream_sync, transcribe_sync, voice_language
 from voxcomm.prompts import VOICE_LANGUAGE_NAMES, build_system_prompt, response_language_for_voice
 from voxcomm.ptt import PttListener, capture_input
+from voxcomm.streaming import SentenceStream
 from voxcomm.theme import dialog_stylesheet, make_icon, mix_colors, rgba, system_accent, system_surface, system_text
 
 
@@ -39,6 +40,7 @@ WHISPER_CPP_DEFAULT_URL = "http://127.0.0.1:8081"
 OPENAI_TTS_DEFAULT_URL = "http://127.0.0.1:8097"
 SETTINGS_LABEL_WIDTH = 140
 SETTINGS_ICON_BUTTON = 33
+THINKING_LABELS = {"off": "Aus", "on": "An", "low": "Niedrig", "medium": "Mittel", "high": "Hoch"}
 USER_PREFIX = "Du: "
 AI_LABEL = "A.I.: "
 AI_MARKER = "\n" + AI_LABEL
@@ -67,7 +69,8 @@ class Events(QObject):
     message = Signal(str, str)
     request_message = Signal(str, str, object)
     discovery = Signal(str, object, str)
-    speak = Signal(str, object)
+    thinking = Signal(int, object)
+    speak = Signal(object, object)
     speech_finished = Signal()
 
 
@@ -215,6 +218,7 @@ class SettingsDialog(QDialog):
         self.setStyleSheet(dialog_stylesheet(system_accent(), system_surface(), system_text()))
         self.discovery = Events()
         self.discovery.discovery.connect(self._discovery_result)
+        self.discovery.thinking.connect(self._apply_thinking_options)
         self.stt = QLineEdit(config.stt_url)
         self.stt_provider = QComboBox()
         self.stt_provider.addItem("Wyoming", "wyoming")
@@ -318,6 +322,19 @@ class SettingsDialog(QDialog):
         self.model = QComboBox()
         self.model.setEditable(True)
         self.model.setCurrentText(config.llm_model)
+        self._thinking_setting = config.llm_thinking
+        self._thinking_token = 0
+        self._thinking_shown = False
+        self.thinking = QComboBox()
+        self.thinking.setToolTip(
+            "Welche Stufen es gibt, meldet das Modell selbst. Bei Denkmodellen verkürzt „Aus“ die Wartezeit "
+            "bis zur Antwort deutlich.")
+        self._fill_thinking([])
+        self._thinking_timer = QTimer(self)
+        self._thinking_timer.setSingleShot(True)
+        self._thinking_timer.setInterval(400)
+        self._thinking_timer.timeout.connect(self._lookup_thinking)
+        self.thinking.activated.connect(lambda _: self._store_thinking())
         self.key = HotkeyField(config.ptt_key, clearable=True, validator=self._general_hotkey_conflict)
         self.sample_rate = QSpinBox()
         self.sample_rate.setRange(8000, 48000)
@@ -355,7 +372,7 @@ class SettingsDialog(QDialog):
         left.addWidget(self.stt_section)
         self.llm_section = self._section("Sprachmodell", [
             ("Anbieter", self.provider), ("URL", self.llm_url), ("Modell", model_row),
-            ("API-Schlüssel", self.key_row),
+            ("Denkmodus", self.thinking), ("API-Schlüssel", self.key_row),
         ])
         left.addWidget(self.llm_section)
         left.addStretch(1)
@@ -384,6 +401,9 @@ class SettingsDialog(QDialog):
         self.key.error.connect(self.discovery_status.setText)
         self.profile_hotkey.error.connect(self.discovery_status.setText)
         self.provider.currentIndexChanged.connect(self._update_llm_fields)
+        for restart in (self.model.currentTextChanged, self.provider.currentIndexChanged,
+                        self.llm_url.editingFinished, self.api_key.editingFinished):
+            restart.connect(lambda *_: self._thinking_timer.start())
         self.tts_provider.currentIndexChanged.connect(self._update_tts_fields)
         self.stt_provider.currentIndexChanged.connect(self._update_stt_fields)
         self.tts_language.currentIndexChanged.connect(lambda: self._update_response_language(self.voice.currentText()))
@@ -439,6 +459,49 @@ class SettingsDialog(QDialog):
         layout.addLayout(form)
         frame.form = form
         return frame
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._thinking_shown:
+            self._thinking_shown = True
+            self._lookup_thinking()
+
+    def _fill_thinking(self, options: list[str], known: bool = False):
+        selected = self._thinking_setting
+        self.thinking.clear()
+        self.thinking.addItem("Modell-Standard", "")
+        for option in options:
+            self.thinking.addItem(THINKING_LABELS.get(option, option.capitalize()), option)
+        if known and not options:
+            self.thinking.clear()
+            self.thinking.addItem("Vom Modell nicht steuerbar", "")
+        elif not known and selected:
+            self.thinking.addItem(THINKING_LABELS.get(selected, selected.capitalize()), selected)
+        self.thinking.setEnabled(not known or bool(options))
+        self.thinking.setCurrentIndex(max(self.thinking.findData(selected), 0))
+
+    def _lookup_thinking(self):
+        self._thinking_token += 1
+        token = self._thinking_token
+        provider, url = self.provider.currentData() or "ollama", self.llm_url.text().strip()
+        model, api_key = self.model.currentText().strip(), self.api_key.text()
+        signals = self.discovery
+
+        def run():
+            options = thinking_options(provider, url, model, api_key)
+            try:
+                signals.thinking.emit(token, options)
+            except RuntimeError:
+                pass
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _apply_thinking_options(self, token: int, options: list[str]):
+        if token == self._thinking_token:
+            self._fill_thinking(options, known=True)
+
+    def _store_thinking(self):
+        self._thinking_setting = self.thinking.currentData() or ""
 
     def _update_response_language(self, voice_name: str):
         if self.tts_provider.currentData() == "openai":
@@ -755,6 +818,7 @@ class SettingsDialog(QDialog):
         config.auto_speak = self.auto_speak.isChecked()
         config.tray_mode = self.tray_mode.isChecked()
         config.llm_provider, config.llm_url, config.llm_model = self.provider.currentData() or "ollama", self.llm_url.text(), self.model.currentText()
+        config.llm_thinking = self._thinking_setting
         config.ollama_api_key = self.api_key.text().strip()
         config.ptt_key, config.sample_rate = self.key.value(), self.sample_rate.value()
         return config
@@ -1082,6 +1146,7 @@ class Overlay(QMainWindow):
             with self._request_cancellations_lock:
                 for cancel_event in self._request_cancellations:
                     cancel_event.set()
+            self._clear_transcript()
             self._ptt_pressed_at = time.monotonic()
             self._hide_timer.stop()
             self._hide_after_typing = False
@@ -1121,14 +1186,18 @@ class Overlay(QMainWindow):
             if not is_short_press:
                 self._set_status("Verarbeite Sprache …")
 
+    def _clear_transcript(self):
+        self._type_timer.stop()
+        self._typing_text = ""
+        self._typing_index = 0
+        self.transcript.clear()
+
     def _cancel_active_work(self):
         with self._request_cancellations_lock:
             for cancel_event in self._request_cancellations:
                 cancel_event.set()
         self._stop_speaking()
-        self._type_timer.stop()
-        self._typing_text = ""
-        self.transcript.clear()
+        self._clear_transcript()
         self._hide_timer.stop()
         self._hide_after_typing = True
         self._set_status("Bereit · Anfrage abgebrochen")
@@ -1162,29 +1231,44 @@ class Overlay(QMainWindow):
                 return
             self.events.request_message.emit(THINKING_STATUS, f"{USER_PREFIX}{text}\n", cancel_event)
             profile_name = profile if profile in self.config.special_prompts else ""
-            answer = chat(
-                self.config.llm_provider,
-                self.config.llm_url,
-                self.config.llm_model,
-                text,
-                system_prompt=build_system_prompt(
-                    piper_voice=self.config.tts_voice if self.config.tts_provider == "wyoming" else "",
-                    special_prompt_name=profile_name,
-                    special_prompt=self.config.special_prompts.get(profile_name, ""),
-                    fallback_language=self.config.response_language,
-                    global_prompt=self.config.global_prompt,
-                ),
-                enabled_tools=self.config.enabled_tools.get(profile_name or "__global__", []),
-                input_actions=self.config.input_action_catalogs.get(profile_name or "__global__", ""),
-                api_key=self.config.ollama_api_key,
-                cancel_event=cancel_event,
-            )
+            enabled_tools = self.config.enabled_tools.get(profile_name or "__global__", [])
+            # Mit Websuche kann die Antwort nachträglich ersetzt werden, daher erst nach der fertigen Antwort sprechen.
+            speech = None
+            if self.config.auto_speak and "web_search" not in enabled_tools:
+                speech = SentenceStream(
+                    cancel_event, on_first=lambda: self.events.speak.emit(speech, cancel_event))
+            streamed = []
+            try:
+                answer = chat(
+                    self.config.llm_provider,
+                    self.config.llm_url,
+                    self.config.llm_model,
+                    text,
+                    system_prompt=build_system_prompt(
+                        piper_voice=self.config.tts_voice if self.config.tts_provider == "wyoming" else "",
+                        special_prompt_name=profile_name,
+                        special_prompt=self.config.special_prompts.get(profile_name, ""),
+                        fallback_language=self.config.response_language,
+                        global_prompt=self.config.global_prompt,
+                    ),
+                    enabled_tools=enabled_tools,
+                    input_actions=self.config.input_action_catalogs.get(profile_name or "__global__", ""),
+                    api_key=self.config.ollama_api_key,
+                    cancel_event=cancel_event,
+                    on_text=(lambda delta: (streamed.append(delta), speech.feed(delta))) if speech else None,
+                    thinking=self.config.llm_thinking,
+                )
+                if speech is not None and not streamed and not cancel_event.is_set():
+                    speech.feed(answer)
+            finally:
+                if speech is not None:
+                    speech.finish()
             if cancel_event.is_set():
                 return
             self.events.request_message.emit(
                 "Bereit · Antwort lokal erzeugt", f"{USER_PREFIX}{text}{AI_MARKER}{answer}", cancel_event
             )
-            if self.config.auto_speak and not cancel_event.is_set():
+            if self.config.auto_speak and speech is None and not cancel_event.is_set():
                 self.events.speak.emit(answer, cancel_event)
         except Exception as error:
             if not cancel_event.is_set():
@@ -1224,7 +1308,8 @@ class Overlay(QMainWindow):
 
     def _set_status(self, text: str):
         self.status.setText(text)
-        if text in (SPEAKING_STATUS, "Bereit · PTT zum Sprechen") and AI_MARKER in self._last_text:
+        showing_last_answer = AI_MARKER in self._last_text and self._typing_text == self._last_text
+        if text in (SPEAKING_STATUS, "Bereit · PTT zum Sprechen") and showing_last_answer:
             user_text, _marker, answer = self._last_text.partition(AI_MARKER)
             publish_status(f"{user_text}\n{AI_LABEL}{answer}")
         else:
@@ -1335,7 +1420,7 @@ class Overlay(QMainWindow):
         self._show_message(SPEAKING_STATUS, self._last_text)
         self._start_speak(self._last_response)
 
-    def _start_speak(self, text: str, cancel_event=None):
+    def _start_speak(self, source, cancel_event=None):
         if cancel_event is not None and cancel_event.is_set():
             return
         self._stop_speaking()
@@ -1346,22 +1431,24 @@ class Overlay(QMainWindow):
         self._hide_timer.stop()
         self._fade_animation.stop()
         self._text_opacity.setOpacity(1)
-        threading.Thread(target=self._speak, args=(text, cancel_event), daemon=True).start()
+        threading.Thread(target=self._speak, args=(source, cancel_event), daemon=True).start()
 
     def _stop_speaking(self):
         if self._speech_cancel is not None:
             self._speech_cancel.set()
 
-    def _speak(self, text: str, cancel_event: threading.Event):
-        try:
+    def _speech_chunks(self, sentences):
+        for sentence in sentences:
             if self.config.tts_provider == "openai":
-                audio, sample_rate = openai_tts.speak_sync(
-                    text, self.config.tts_url, self.config.tts_voice, self.config.tts_language)
+                yield from openai_tts.speak_stream(
+                    sentence, self.config.tts_url, self.config.tts_voice, self.config.tts_language)
             else:
-                audio, sample_rate = speak_sync(text, self.config.tts_url, self.config.tts_voice)
-            if cancel_event.is_set():
-                return
-            play_pcm(audio, sample_rate, cancel_event)
+                yield from speak_stream_sync(sentence, self.config.tts_url, self.config.tts_voice)
+
+    def _speak(self, source, cancel_event: threading.Event):
+        try:
+            sentences = [source] if isinstance(source, str) else source
+            play_stream(prefetch(self._speech_chunks(sentences), cancel_event), cancel_event)
             if not cancel_event.is_set():
                 self.events.request_message.emit("Bereit · PTT zum Sprechen", "", cancel_event)
         except Exception as error:

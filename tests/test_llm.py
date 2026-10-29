@@ -1,9 +1,230 @@
+import json
 import unittest
 import threading
 from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
-from voxcomm.providers.llm import _dated_search_query, chat, list_models
+import httpx
+
+from voxcomm.providers.llm import (
+    _THINKING_CACHE, _dated_search_query, _request_stream, _thinking_values, chat, list_models,
+    thinking_options, thinking_request_value,
+)
+
+
+class FakeStreamResponse:
+    def __init__(self, lines, status_code=200):
+        self._lines = lines
+        self.status_code = status_code
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def raise_for_status(self):
+        pass
+
+    def iter_lines(self):
+        yield from self._lines
+
+
+def _ndjson(*chunks):
+    return [json.dumps({"message": chunk, "done": False}) for chunk in chunks]
+
+
+class StreamingTests(unittest.TestCase):
+    @patch("voxcomm.providers.llm.httpx.stream")
+    def test_ollama_stream_reports_each_delta_and_returns_joined_message(self, stream):
+        stream.return_value = FakeStreamResponse(_ndjson({"content": "Hal"}, {"content": "lo"}, {"content": ""}))
+        deltas = []
+
+        message = _request_stream("ollama", "http://h:11434", "m", [], on_text=deltas.append)
+
+        self.assertEqual(deltas, ["Hal", "lo"])
+        self.assertEqual(message, {"role": "assistant", "content": "Hallo"})
+        payload = stream.call_args.kwargs["json"]
+        self.assertTrue(payload["stream"])
+        self.assertEqual(stream.call_args.args[:2], ("POST", "http://h:11434/api/chat"))
+
+    @patch("voxcomm.providers.llm.httpx.stream")
+    def test_ollama_stream_collects_tool_calls(self, stream):
+        call = {"function": {"name": "web_search", "arguments": {"query": "x"}}}
+        stream.return_value = FakeStreamResponse(_ndjson({"content": ""}, {"tool_calls": [call]}))
+
+        message = _request_stream("ollama", "http://h", "m", [], [{"name": "web_search"}])
+
+        self.assertEqual(message["tool_calls"], [call])
+
+    @patch("voxcomm.providers.llm.httpx.stream")
+    def test_llama_cpp_sse_text_and_fragmented_tool_calls(self, stream):
+        events = [
+            {"choices": [{"delta": {"content": "A"}}]},
+            {"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "id": "c1", "function": {"name": "input_control", "arguments": "{\"act"}}]}}]},
+            {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "ion\": \"On\"}"}}]}}]},
+        ]
+        lines = [f"data: {json.dumps(event)}" for event in events] + ["", "data: [DONE]"]
+        stream.return_value = FakeStreamResponse(lines)
+        deltas = []
+
+        message = _request_stream("llama.cpp", "http://h:8080", "m", [], on_text=deltas.append)
+
+        self.assertEqual(deltas, ["A"])
+        self.assertEqual(message["tool_calls"], [{
+            "id": "c1", "type": "function",
+            "function": {"name": "input_control", "arguments": "{\"action\": \"On\"}"}}])
+        self.assertEqual(stream.call_args.args[1], "http://h:8080/v1/chat/completions")
+
+    @patch("voxcomm.providers.llm.httpx.stream")
+    def test_cancelled_stream_stops_reading(self, stream):
+        cancel_event = threading.Event()
+        deltas = []
+
+        def on_text(delta):
+            deltas.append(delta)
+            cancel_event.set()
+
+        stream.return_value = FakeStreamResponse(_ndjson({"content": "a"}, {"content": "b"}, {"content": "c"}))
+
+        _request_stream("ollama", "http://h", "m", [], on_text=on_text, cancel_event=cancel_event)
+
+        self.assertEqual(deltas, ["a"])
+
+    @patch("voxcomm.providers.llm.httpx.post")
+    @patch("voxcomm.providers.llm.httpx.stream")
+    def test_chat_streams_when_listener_given_and_web_search_is_off(self, stream, post):
+        stream.return_value = FakeStreamResponse(_ndjson({"content": "Guten "}, {"content": "Tag"}))
+        deltas = []
+
+        answer = chat("ollama", "http://h:11434", "m", "Hi", on_text=deltas.append)
+
+        self.assertEqual(answer, "Guten Tag")
+        self.assertEqual(deltas, ["Guten ", "Tag"])
+        post.assert_not_called()
+
+    @patch("voxcomm.providers.llm.httpx.post")
+    @patch("voxcomm.providers.llm.httpx.stream")
+    def test_chat_does_not_stream_when_web_search_could_rewrite_the_answer(self, stream, post):
+        post.return_value = Mock(json=Mock(return_value={"message": {"content": "Antwort"}}))
+        deltas = []
+
+        answer = chat("ollama", "http://h:11434", "m", "Hi", enabled_tools=["web_search"], on_text=deltas.append)
+
+        self.assertEqual(answer, "Antwort")
+        self.assertEqual(deltas, [])
+        stream.assert_not_called()
+
+    @patch("voxcomm.providers.llm.press_gamepad_button", return_value="Button3")
+    @patch("voxcomm.providers.llm.httpx.stream")
+    def test_streamed_tool_call_is_executed_and_followed_by_a_streamed_reply(self, stream, press):
+        call = {"function": {"name": "input_control", "arguments": {"action": "Gear On"}}}
+        stream.side_effect = [
+            FakeStreamResponse(_ndjson({"tool_calls": [call]})),
+            FakeStreamResponse(_ndjson({"content": "Fahrwerk ausgefahren."})),
+        ]
+        deltas = []
+
+        answer = chat(
+            "ollama", "http://h:11434", "m", "Bitte das Fahrwerk ausfahren, wenn m\u00f6glich",
+            enabled_tools=["input_control"],
+            input_actions="Gear On => gear down => Button3 => Gear extended\nGear Off => gear up => Button4 => Gear retracted",
+            on_text=deltas.append,
+        )
+
+        self.assertEqual(answer, "Fahrwerk ausgefahren.")
+        self.assertEqual(deltas, ["Fahrwerk ausgefahren."])
+        press.assert_called_once_with("Button3")
+
+
+class ThinkingTests(unittest.TestCase):
+    def setUp(self):
+        _THINKING_CACHE.clear()
+
+    def test_boolean_models_offer_off_and_on(self):
+        self.assertEqual(_thinking_values({"thinking": {"values": [False, True], "default": True}}), ["off", "on"])
+
+    def test_leveled_models_offer_their_own_levels(self):
+        info = {"thinking": {"values": ["low", "medium", "high"], "default": "medium"}}
+
+        self.assertEqual(_thinking_values(info), ["low", "medium", "high"])
+
+    def test_models_without_thinking_controls_offer_nothing(self):
+        self.assertEqual(_thinking_values({"thinking": None, "capabilities": ["completion"]}), [])
+        self.assertEqual(_thinking_values({"thinking": {"values": [False]}}), [])
+        self.assertEqual(_thinking_values({}), [])
+
+    def test_older_servers_with_only_a_thinking_capability_offer_off_and_on(self):
+        self.assertEqual(_thinking_values({"capabilities": ["completion", "thinking"]}), ["off", "on"])
+
+    def test_request_value_maps_setting_and_ignores_unknown_ones(self):
+        self.assertIs(thinking_request_value("off", ["off", "on"]), False)
+        self.assertIs(thinking_request_value("on", ["off", "on"]), True)
+        self.assertEqual(thinking_request_value("high", ["low", "medium", "high"]), "high")
+        self.assertIsNone(thinking_request_value("high", ["off", "on"]))
+        self.assertIsNone(thinking_request_value("off", []))
+
+    @patch("voxcomm.providers.llm.httpx.post")
+    def test_options_come_from_show_and_are_cached_per_model(self, post):
+        post.return_value = Mock(json=Mock(return_value={"thinking": {"values": ["low", "high"]}}))
+
+        first = thinking_options("ollama", "http://h:11434/", " gpt-oss ")
+        second = thinking_options("ollama", "http://h:11434", "gpt-oss")
+
+        self.assertEqual((first, second), (["low", "high"], ["low", "high"]))
+        post.assert_called_once()
+        self.assertEqual(post.call_args.args[0], "http://h:11434/api/show")
+        self.assertEqual(post.call_args.kwargs["json"], {"model": "gpt-oss"})
+
+    @patch("voxcomm.providers.llm.httpx.post", side_effect=httpx.ConnectError("down"))
+    def test_unreachable_server_yields_no_options_and_is_not_cached(self, post):
+        self.assertEqual(thinking_options("ollama", "http://h", "m"), [])
+        self.assertEqual(thinking_options("ollama", "http://h", "m"), [])
+        self.assertEqual(post.call_count, 2)
+
+    @patch("voxcomm.providers.llm.httpx.post")
+    def test_other_providers_and_blank_models_are_not_queried(self, post):
+        self.assertEqual(thinking_options("llama.cpp", "http://h", "m"), [])
+        self.assertEqual(thinking_options("ollama", "http://h", "  "), [])
+        post.assert_not_called()
+
+    @patch("voxcomm.providers.llm.thinking_options", return_value=["off", "on"])
+    @patch("voxcomm.providers.llm.httpx.post")
+    def test_chat_sends_think_false_when_off_is_selected(self, post, _options):
+        post.return_value = Mock(json=Mock(return_value={"message": {"content": "Hi"}}))
+
+        chat("ollama", "http://h:11434", "m", "Hallo", thinking="off")
+
+        self.assertIs(post.call_args.kwargs["json"]["think"], False)
+
+    @patch("voxcomm.providers.llm.thinking_options", return_value=["low", "medium", "high"])
+    @patch("voxcomm.providers.llm.httpx.stream")
+    def test_streaming_chat_sends_the_selected_level(self, stream, _options):
+        stream.return_value = FakeStreamResponse(_ndjson({"content": "Hi"}))
+
+        chat("ollama", "http://h:11434", "m", "Hallo", thinking="low", on_text=lambda _: None)
+
+        self.assertEqual(stream.call_args.kwargs["json"]["think"], "low")
+
+    @patch("voxcomm.providers.llm.thinking_options", return_value=["off", "on"])
+    @patch("voxcomm.providers.llm.httpx.post")
+    def test_setting_unknown_to_the_model_is_not_sent(self, post, _options):
+        post.return_value = Mock(json=Mock(return_value={"message": {"content": "Hi"}}))
+
+        chat("ollama", "http://h:11434", "m", "Hallo", thinking="high")
+
+        self.assertNotIn("think", post.call_args.kwargs["json"])
+
+    @patch("voxcomm.providers.llm.thinking_options")
+    @patch("voxcomm.providers.llm.httpx.post")
+    def test_default_setting_does_not_query_or_send_anything(self, post, options):
+        post.return_value = Mock(json=Mock(return_value={"message": {"content": "Hi"}}))
+
+        chat("ollama", "http://h:11434", "m", "Hallo")
+
+        options.assert_not_called()
+        self.assertNotIn("think", post.call_args.kwargs["json"])
 
 
 class ModelDiscoveryTests(unittest.TestCase):

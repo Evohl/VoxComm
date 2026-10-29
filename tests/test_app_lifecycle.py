@@ -102,6 +102,25 @@ class ApplicationLifecycleTests(unittest.TestCase):
             overlay.tray_icon.hide()
             overlay.deleteLater()
 
+    def test_new_recording_clears_previous_transcript_and_stops_typing(self):
+        app = QApplication.instance() or QApplication([])
+        with patch("voxcomm.app.PttListener"), patch("voxcomm.app.threading.Thread"):
+            overlay = Overlay()
+            overlay._show_message("Bereit · Antwort lokal erzeugt", "Du: Wie macht die Kuh?\nA.I.: Muh")
+            overlay._type_next_character()
+
+            overlay._ptt_event("pressed", "")
+
+            self.assertFalse(overlay._type_timer.isActive())
+            self.assertEqual(overlay.transcript.toPlainText(), "")
+            overlay._show_message("Denke nach …", "Du: Wetter morgen?\n")
+            while overlay._type_timer.isActive():
+                overlay._type_next_character()
+            self.assertEqual(overlay.transcript.toPlainText(), "Du: Wetter morgen?\n")
+            overlay.listener.stop()
+            overlay.tray_icon.hide()
+            overlay.deleteLater()
+
     def test_tray_click_toggles_recording_and_menu_contains_requested_actions(self):
         app = QApplication.instance() or QApplication([])
         with patch("voxcomm.app.PttListener"), patch("voxcomm.app.threading.Thread") as thread_class:
@@ -531,13 +550,80 @@ class ApplicationLifecycleTests(unittest.TestCase):
             completed = []
             overlay.events.speech_finished.connect(lambda: completed.append(True))
 
-            with patch("voxcomm.app.speak_sync", return_value=(b"audio", 22050)):
-                with patch("voxcomm.app.play_pcm") as play_pcm:
+            with patch("voxcomm.app.speak_stream_sync", return_value=iter([(b"audio", 22050)])):
+                with patch("voxcomm.audio.sd.OutputStream") as output_stream:
                     overlay._speak("Antwort", cancel_event)
 
-            play_pcm.assert_not_called()
+            output_stream.assert_not_called()
             self.assertEqual(completed, [True])
             overlay.listener.stop()
+            overlay.deleteLater()
+
+    def test_auto_speak_starts_with_first_sentence_while_llm_is_still_streaming(self):
+        app = QApplication.instance() or QApplication([])
+        config = AppConfig(auto_speak=True, sample_rate=16000)
+        with patch("voxcomm.app.load_config", return_value=config), patch("voxcomm.app.PttListener"):
+            overlay = Overlay()
+            seen = {}
+
+            def fake_chat(*_args, on_text=None, **_kwargs):
+                on_text("Das Schiff ist bereit für den Start. Die Trieb")
+                seen["speech_started"] = thread_class.called
+                on_text("werke laufen stabil und ruhig.")
+                return "Das Schiff ist bereit für den Start. Die Triebwerke laufen stabil und ruhig."
+
+            with (
+                patch("voxcomm.app.threading.Thread") as thread_class,
+                patch("voxcomm.app.record_until_released", return_value=b"\0" * 9600),
+                patch("voxcomm.app.transcribe_sync", return_value="Status"),
+                patch("voxcomm.app.chat", side_effect=fake_chat),
+            ):
+                overlay._capture(threading.Event())
+
+            self.assertTrue(seen["speech_started"])
+            source = thread_class.call_args.kwargs["args"][0]
+            self.assertEqual(list(source), [
+                "Das Schiff ist bereit für den Start.", "Die Triebwerke laufen stabil und ruhig."])
+            overlay.listener.stop()
+            overlay.tray_icon.hide()
+            overlay.deleteLater()
+
+    def test_non_streaming_answer_is_still_spoken_once_when_chat_does_not_stream(self):
+        app = QApplication.instance() or QApplication([])
+        config = AppConfig(auto_speak=True, sample_rate=16000)
+        with patch("voxcomm.app.load_config", return_value=config), patch("voxcomm.app.PttListener"):
+            overlay = Overlay()
+            with (
+                patch("voxcomm.app.threading.Thread") as thread_class,
+                patch("voxcomm.app.record_until_released", return_value=b"\0" * 9600),
+                patch("voxcomm.app.transcribe_sync", return_value="Status"),
+                patch("voxcomm.app.chat", return_value="Kurze Antwort"),
+            ):
+                overlay._capture(threading.Event())
+
+            source = thread_class.call_args.kwargs["args"][0]
+            self.assertEqual(list(source), ["Kurze Antwort"])
+            overlay.listener.stop()
+            overlay.tray_icon.hide()
+            overlay.deleteLater()
+
+    def test_web_search_profile_speaks_only_the_final_answer(self):
+        app = QApplication.instance() or QApplication([])
+        config = AppConfig(auto_speak=True, sample_rate=16000, enabled_tools={"__global__": ["web_search"]})
+        with patch("voxcomm.app.load_config", return_value=config), patch("voxcomm.app.PttListener"):
+            overlay = Overlay()
+            with (
+                patch("voxcomm.app.threading.Thread") as thread_class,
+                patch("voxcomm.app.record_until_released", return_value=b"\0" * 9600),
+                patch("voxcomm.app.transcribe_sync", return_value="Wetter"),
+                patch("voxcomm.app.chat", return_value="Morgen wird es sonnig.") as chat,
+            ):
+                overlay._capture(threading.Event())
+
+            self.assertIsNone(chat.call_args.kwargs["on_text"])
+            self.assertEqual(thread_class.call_args.kwargs["args"][0], "Morgen wird es sonnig.")
+            overlay.listener.stop()
+            overlay.tray_icon.hide()
             overlay.deleteLater()
 
     def test_answer_types_slowly_and_scrolls_when_long(self):
@@ -1009,9 +1095,9 @@ class ProviderSelectionTests(unittest.TestCase):
             wyoming.assert_not_called()
 
             with (
-                patch("voxcomm.app.openai_tts.speak_sync", return_value=(b"audio", 24000)) as openai_speak,
-                patch("voxcomm.app.speak_sync") as piper,
-                patch("voxcomm.app.play_pcm"),
+                patch("voxcomm.app.openai_tts.speak_stream", return_value=iter([(b"\0\0", 24000)])) as openai_speak,
+                patch("voxcomm.app.speak_stream_sync") as piper,
+                patch("voxcomm.app.play_stream", side_effect=lambda chunks, _cancel: list(chunks)),
             ):
                 overlay._speak("Antwort", threading.Event())
 
@@ -1042,6 +1128,92 @@ class ProviderSelectionTests(unittest.TestCase):
             overlay.listener.stop()
             overlay.tray_icon.hide()
             overlay.deleteLater()
+
+    def test_thinking_setting_is_passed_to_chat(self):
+        app = QApplication.instance() or QApplication([])
+        config = AppConfig(llm_thinking="off")
+        with patch("voxcomm.app.load_config", return_value=config), patch("voxcomm.app.PttListener"):
+            overlay = Overlay()
+            with (
+                patch("voxcomm.app.record_until_released", return_value=b"\0" * 9600),
+                patch("voxcomm.app.transcribe_sync", return_value="Hallo"),
+                patch("voxcomm.app.chat", return_value="Antwort") as chat,
+            ):
+                overlay._capture(threading.Event())
+
+            self.assertEqual(chat.call_args.kwargs["thinking"], "off")
+            overlay.listener.stop()
+            overlay.tray_icon.hide()
+            overlay.deleteLater()
+
+    def test_thinking_choices_follow_the_models_reported_controls(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig(llm_model="gemma4", llm_thinking="off"))
+
+        self.assertEqual(dialog.thinking.currentData(), "off")
+        self.assertEqual(dialog.thinking.currentText(), "Aus")
+        dialog._apply_thinking_options(dialog._thinking_token, ["off", "on"])
+        self.assertEqual([dialog.thinking.itemText(i) for i in range(dialog.thinking.count())],
+                         ["Modell-Standard", "Aus", "An"])
+        self.assertEqual(dialog.thinking.currentData(), "off")
+
+        dialog._apply_thinking_options(dialog._thinking_token, ["low", "medium", "high"])
+        self.assertEqual([dialog.thinking.itemData(i) for i in range(dialog.thinking.count())],
+                         ["", "low", "medium", "high"])
+        self.assertEqual(dialog.thinking.currentData(), "")
+        self.assertEqual(dialog.apply(AppConfig()).llm_thinking, "off")
+
+        dialog.thinking.setCurrentIndex(dialog.thinking.findData("high"))
+        dialog.thinking.activated.emit(dialog.thinking.currentIndex())
+        self.assertEqual(dialog.apply(AppConfig()).llm_thinking, "high")
+        dialog.deleteLater()
+
+    def test_model_without_thinking_controls_disables_the_choice_but_keeps_the_setting(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig(llm_model="deepseek-v2", llm_thinking="high"))
+
+        dialog._apply_thinking_options(dialog._thinking_token, [])
+
+        self.assertFalse(dialog.thinking.isEnabled())
+        self.assertEqual(dialog.thinking.currentText(), "Vom Modell nicht steuerbar")
+        self.assertEqual(dialog.apply(AppConfig()).llm_thinking, "high")
+        dialog._apply_thinking_options(dialog._thinking_token, ["low", "medium", "high"])
+        self.assertTrue(dialog.thinking.isEnabled())
+        self.assertEqual(dialog.thinking.currentData(), "high")
+        dialog.deleteLater()
+
+    def test_stale_thinking_answer_for_a_previous_model_is_ignored(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig(llm_model="a"))
+        with patch("voxcomm.app.threading.Thread"):
+            dialog._lookup_thinking()
+            stale = dialog._thinking_token
+            dialog._lookup_thinking()
+
+        dialog._apply_thinking_options(stale, ["low", "high"])
+
+        self.assertEqual(dialog.thinking.count(), 1)
+        dialog._apply_thinking_options(dialog._thinking_token, ["low", "high"])
+        self.assertEqual(dialog.thinking.count(), 3)
+        dialog.deleteLater()
+
+    def test_thinking_lookup_runs_off_the_ui_thread_with_current_connection_values(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig(llm_provider="ollama", llm_url="http://h:11434", llm_model="gpt-oss"))
+        received = []
+        dialog.discovery.thinking.connect(lambda token, options: received.append((token, options)))
+
+        with patch("voxcomm.app.thinking_options", return_value=["low", "medium", "high"]) as lookup:
+            dialog._lookup_thinking()
+            for _ in range(100):
+                app.processEvents()
+                if received:
+                    break
+                QTest.qWait(10)
+
+        lookup.assert_called_once_with("ollama", "http://h:11434", "gpt-oss", "")
+        self.assertEqual(received, [(dialog._thinking_token, ["low", "medium", "high"])])
+        dialog.deleteLater()
 
 
 if __name__ == "__main__":

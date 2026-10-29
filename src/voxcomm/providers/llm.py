@@ -107,14 +107,58 @@ def list_models(provider: str, base_url: str) -> list[str]:
     return sorted({str(model) for model in models if model}, key=str.casefold)
 
 
+def _thinking_values(info: dict) -> list[str]:
+    thinking = info.get("thinking")
+    if isinstance(thinking, dict) and isinstance(thinking.get("values"), list):
+        raw = thinking["values"]
+    elif thinking is None and "thinking" in (info.get("capabilities") or []):
+        raw = [False, True]
+    else:
+        return []
+    flags = {item for item in raw if isinstance(item, bool)}
+    levels = [item for item in raw if isinstance(item, str) and item not in ("on", "off")]
+    if not levels and flags == {False}:
+        return []
+    return (["off"] if False in flags else []) + levels + (["on"] if True in flags else [])
+
+
+_THINKING_CACHE: dict[tuple[str, str, str], list[str]] = {}
+
+
+def thinking_options(provider: str, base_url: str, model: str, api_key: str = "") -> list[str]:
+    """Vom Modell gemeldete Denkmodi: "off", "on" oder modelleigene Stufen; leer, wenn nicht steuerbar."""
+    if provider not in ("ollama", "ollama-cloud") or not model.strip():
+        return []
+    base_url = base_url.rstrip("/") or (CLOUD_DEFAULT_BASE if provider == "ollama-cloud" else "")
+    key = (provider, base_url, model.strip())
+    if key not in _THINKING_CACHE:
+        headers = {"Authorization": f"Bearer {api_key.strip()}"} if provider == "ollama-cloud" and api_key.strip() else {}
+        try:
+            response = httpx.post(f"{base_url}/api/show", json={"model": model.strip()}, headers=headers, timeout=10)
+            response.raise_for_status()
+            _THINKING_CACHE[key] = _thinking_values(response.json())
+        except (httpx.HTTPError, ValueError):
+            return []
+    return list(_THINKING_CACHE[key])
+
+
+def thinking_request_value(setting: str, options: list[str]) -> bool | str | None:
+    """Wert für das think-Feld; None (Modell-Standard), wenn das Modell die Einstellung nicht kennt."""
+    if setting not in options:
+        return None
+    return {"off": False, "on": True}.get(setting, setting)
+
+
 def _request(
     provider: str, base_url: str, model: str, messages: list[dict], tools: list[dict] | None = None,
-    *, api_key: str = "",
+    *, api_key: str = "", think: bool | str | None = None,
 ) -> dict:
     if provider == "ollama":
         payload = {"model": model, "messages": messages, "stream": False}
         if tools:
             payload["tools"] = [{"type": "function", "function": tool} for tool in tools]
+        if think is not None:
+            payload["think"] = think
         response = httpx.post(f"{base_url}/api/chat", json=payload, timeout=90)
         response.raise_for_status()
         return response.json()["message"]
@@ -132,12 +176,84 @@ def _request(
         if tools:
             payload["tools"] = [{"type": "function", "function": tool} for tool in tools]
         headers = {"Authorization": f"Bearer {api_key.strip()}"} if api_key.strip() else {}
+        if think is not None:
+            payload["think"] = think
         response = httpx.post(f"{base_url}/api/chat", json=payload, headers=headers, timeout=120)
         if response.status_code in (401, 403):
             raise CloudAuthError("Ollama-Cloud-API-Schlüssel fehlt oder ist ungültig")
         response.raise_for_status()
         return response.json()["message"]
     raise ValueError(f"Unsupported LLM provider: {provider}")
+
+
+def _request_stream(
+    provider: str, base_url: str, model: str, messages: list[dict], tools: list[dict] | None = None,
+    *, api_key: str = "", on_text=None, cancel_event: Event | None = None,
+    think: bool | str | None = None,
+) -> dict:
+    """Wie _request, ruft aber on_text je Textteil auf und liefert dieselbe Nachrichtenform zurück."""
+    headers: dict[str, str] = {}
+    payload: dict = {"model": model, "messages": messages, "stream": True}
+    if tools:
+        payload["tools"] = [{"type": "function", "function": tool} for tool in tools]
+    if think is not None and provider in ("ollama", "ollama-cloud"):
+        payload["think"] = think
+    if provider == "llama.cpp":
+        endpoint = f"{base_url}/chat/completions" if base_url.endswith("/v1") else f"{base_url}/v1/chat/completions"
+        if tools:
+            payload["tool_choice"] = "auto"
+    elif provider in ("ollama", "ollama-cloud"):
+        endpoint = f"{base_url}/api/chat"
+        if provider == "ollama-cloud" and api_key.strip():
+            headers["Authorization"] = f"Bearer {api_key.strip()}"
+    else:
+        raise ValueError(f"Unsupported LLM provider: {provider}")
+
+    content: list[str] = []
+    ollama_calls: list[dict] = []
+    openai_calls: dict[int, dict] = {}
+    with httpx.stream("POST", endpoint, json=payload, headers=headers, timeout=90) as response:
+        if provider == "ollama-cloud" and response.status_code in (401, 403):
+            raise CloudAuthError("Ollama-Cloud-API-Schlüssel fehlt oder ist ungültig")
+        response.raise_for_status()
+        for line in response.iter_lines():
+            if cancel_event is not None and cancel_event.is_set():
+                break
+            if not line.strip():
+                continue
+            if provider == "llama.cpp":
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                delta = ((json.loads(data).get("choices") or [{}])[0].get("delta")) or {}
+                text = delta.get("content") or ""
+                for fragment in delta.get("tool_calls") or []:
+                    slot = openai_calls.setdefault(
+                        fragment.get("index", 0),
+                        {"id": "", "type": "function", "function": {"name": "", "arguments": ""}},
+                    )
+                    slot["id"] = fragment.get("id") or slot["id"]
+                    function = fragment.get("function") or {}
+                    slot["function"]["name"] += function.get("name") or ""
+                    slot["function"]["arguments"] += function.get("arguments") or ""
+            else:
+                chunk = json.loads(line)
+                if chunk.get("error"):
+                    raise RuntimeError(str(chunk["error"])[:300])
+                message = chunk.get("message") or {}
+                text = message.get("content") or ""
+                ollama_calls.extend(message.get("tool_calls") or [])
+            if text:
+                content.append(text)
+                if on_text is not None:
+                    on_text(text)
+    result: dict = {"role": "assistant", "content": "".join(content)}
+    tool_calls = ollama_calls or [openai_calls[index] for index in sorted(openai_calls)]
+    if tool_calls:
+        result["tool_calls"] = tool_calls
+    return result
 
 
 def _tool_calls(provider: str, message: dict) -> list[dict]:
@@ -248,6 +364,8 @@ def chat(
     input_actions: str = "",
     api_key: str = "",
     cancel_event: Event | None = None,
+    on_text=None,
+    thinking: str = "",
 ) -> str:
     def cancelled() -> bool:
         return cancel_event is not None and cancel_event.is_set()
@@ -282,6 +400,9 @@ def chat(
         search = lambda query: cloud_web_search(query, base_url, api_key)
     else:
         search = search_web
+    think = None
+    if thinking.strip():
+        think = thinking_request_value(thinking.strip(), thinking_options(provider, base_url, model, api_key))
     messages = []
     if system_prompt.strip():
         messages.append({"role": "system", "content": system_prompt.strip()})
@@ -339,9 +460,13 @@ def chat(
         available_tools = [tool for tool in tool_definitions
                    if tool["name"] != "input_control" or not input_control_attempted]
         try:
-            message = _request(provider, base_url, model, messages,
-                       available_tools if executed < MAX_TOOL_CALLS and available_tools else None,
-                       api_key=api_key)
+            offered_tools = available_tools if executed < MAX_TOOL_CALLS and available_tools else None
+            # Mit Websuche kann die Antwort nachträglich ersetzt werden, daher dann kein Live-Text.
+            if on_text is not None and not web_search_enabled:
+                message = _request_stream(provider, base_url, model, messages, offered_tools,
+                                          api_key=api_key, on_text=on_text, cancel_event=cancel_event, think=think)
+            else:
+                message = _request(provider, base_url, model, messages, offered_tools, api_key=api_key, think=think)
         except CloudAuthError as error:
             return str(error)
         if cancelled():

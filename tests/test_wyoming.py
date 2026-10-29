@@ -8,7 +8,7 @@ from voxcomm.providers.wyoming import (
     _voice_names,
     describe,
     filter_voices,
-    speak,
+    speak_stream,
     transcribe,
 )
 
@@ -116,19 +116,44 @@ class WyomingTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(len(chunk) <= STT_CHUNK_BYTES for chunk in received))
         self.assertEqual(b"".join(received), pcm)
 
-    async def test_speak_uses_service_sample_rate(self):
+    async def test_speak_stream_yields_chunks_as_they_arrive_with_service_sample_rate(self):
+        release_second_chunk = asyncio.Event()
+
         async def handler(reader, writer):
             event, _ = await receive_event(reader)
             self.assertEqual(event["type"], "synthesize")
             await send_event(writer, {"type": "audio-start", "data": {"rate": 22050}})
-            await send_event(writer, {"type": "audio-chunk"}, b"pcm")
+            await send_event(writer, {"type": "audio-chunk"}, b"one")
+            await release_second_chunk.wait()
+            await send_event(writer, {"type": "audio-chunk"}, b"two")
             await send_event(writer, {"type": "audio-stop"})
             writer.close()
 
         server = await asyncio.start_server(handler, "127.0.0.1", 0)
         port = server.sockets[0].getsockname()[1]
         try:
-            self.assertEqual(await speak("Hello", f"tcp://127.0.0.1:{port}"), (b"pcm", 22050))
+            stream = speak_stream("Hello", f"tcp://127.0.0.1:{port}")
+            self.assertEqual(await stream.__anext__(), (b"one", 22050))
+            release_second_chunk.set()
+            self.assertEqual(await stream.__anext__(), (b"two", 22050))
+            with self.assertRaises(StopAsyncIteration):
+                await stream.__anext__()
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    async def test_speak_stream_raises_service_errors(self):
+        async def handler(reader, writer):
+            await receive_event(reader)
+            await send_event(writer, {"type": "error", "data": {"text": "keine Stimme"}})
+            writer.close()
+
+        server = await asyncio.start_server(handler, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            with self.assertRaisesRegex(RuntimeError, "keine Stimme"):
+                async for _ in speak_stream("Hello", f"tcp://127.0.0.1:{port}"):
+                    pass
         finally:
             server.close()
             await server.wait_closed()
