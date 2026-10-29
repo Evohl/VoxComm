@@ -8,8 +8,8 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QApplication
 
-from sc_ai_copilot.app import apply_app_identity
-from sc_ai_copilot.branding import APP_ID, APP_NAME, ICON_SIZES, ICON_SVG, install_launcher, make_app_icon
+from voxcomm.app import apply_app_identity
+from voxcomm.branding import APP_ID, APP_NAME, ICON_SIZES, ICON_SVG, install_launcher, make_app_icon
 
 
 class BrandingTests(unittest.TestCase):
@@ -45,9 +45,9 @@ class BrandingTests(unittest.TestCase):
 
     def test_install_launcher_quotes_python_module_fallback(self):
         with tempfile.TemporaryDirectory() as directory:
-            desktop_path, _ = install_launcher(Path(directory), command="/my env/bin/python -m sc_ai_copilot.app")
+            desktop_path, _ = install_launcher(Path(directory), command="/my env/bin/python -m voxcomm.app")
 
-            self.assertIn('Exec="/my env/bin/python" -m sc_ai_copilot.app\n', desktop_path.read_text(encoding="utf-8"))
+            self.assertIn('Exec="/my env/bin/python" -m voxcomm.app\n', desktop_path.read_text(encoding="utf-8"))
 
     def test_app_identity_sets_name_desktop_file_and_icon(self):
         app = QApplication.instance() or QApplication([])

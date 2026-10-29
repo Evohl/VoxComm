@@ -2,7 +2,7 @@ import asyncio
 import json
 import unittest
 
-from sc_ai_copilot.providers.wyoming import (
+from voxcomm.providers.wyoming import (
     STT_CHUNK_BYTES,
     _address,
     _voice_names,

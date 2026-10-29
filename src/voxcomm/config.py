@@ -28,8 +28,6 @@ class AppConfig:
     llm_url: str = "http://127.0.0.1:11434"
     llm_model: str = ""
     ptt_key: str = "F9"
-    joystick_device: int = -1
-    joystick_button: int = 0
     sample_rate: int = 16000
     tray_mode: bool = False
     overlay_x: int | None = None

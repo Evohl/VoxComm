@@ -16,11 +16,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-input = ["evdev>=1.7; sys_platform == 'linux'", "pynput>=1.7", "pygame>=2.6"]
+input = ["evdev>=1.7; sys_platform == 'linux'", "pynput>=1.7"]
 dev = ["pytest>=8.0"]
 
 [project.scripts]
-voxcomm = "sc_ai_copilot.app:main"
+voxcomm = "voxcomm.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

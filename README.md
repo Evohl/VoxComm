@@ -6,7 +6,7 @@
 
 ## Features
 
-- Push-to-talk from an overlay button, global keyboard hotkey, joystick, or tray click-toggle.
+- Push-to-talk from an overlay button, a global keyboard or controller-button binding, or tray click-toggle.
 - Configurable general hotkey and a separate hotkey for each specialty prompt profile.
 - Wyoming-compatible Whisper STT and optional Piper TTS.
 - Ollama and llama.cpp chat endpoints.
@@ -23,8 +23,7 @@
 - Qt 6 runtime and a working Qt platform plugin. On Wayland, VoxComm prefers XWayland (`xcb`) when `DISPLAY` is available because native Wayland does not allow clients to position their own windows or reliably request always-on-top. An explicitly set `QT_QPA_PLATFORM` is respected.
 - A working microphone and audio output visible to PortAudio.
 - Network access to the configured STT, LLM and, if enabled, TTS endpoints.
-- Optional global keyboard input: `evdev` and read access to keyboard devices under `/dev/input`. Some distributions require membership in the `input` group; use the least-privileged per-session device access your system supports.
-- Optional joystick input: pygame support and access to the selected joystick device.
+- Global keyboard and controller-button bindings use `evdev` and require read access to the matching devices under `/dev/input`. Some distributions require membership in the `input` group; use the least-privileged per-session device access your system supports.
 
 ## Installation
 
@@ -55,25 +54,25 @@ Run these local checks before troubleshooting. They inspect system state but do 
 ```bash
 python3 --version
 pkg-config --modversion portaudio-2.0
-python -c 'import PySide6, sounddevice, evdev, pygame; print("Python dependencies: OK")'
+python -c 'import PySide6, sounddevice, evdev; print("Python dependencies: OK")'
 printf 'session=%s display=%s wayland=%s\n' "$XDG_SESSION_TYPE" "$DISPLAY" "$WAYLAND_DISPLAY"
 ```
 
-Check that at least one keyboard event device is readable and advertises keyboard keys:
+Check that readable keyboard or controller-button event devices are available:
 
 ```bash
 python - <<'PY'
 from evdev import InputDevice, ecodes, list_devices
-keyboards = []
+devices = []
 for path in list_devices():
     try:
         device = InputDevice(path)
-        if ecodes.KEY_A in device.capabilities().get(ecodes.EV_KEY, []):
-            keyboards.append((path, device.name))
+        if device.capabilities().get(ecodes.EV_KEY):
+            devices.append((path, device.name))
         device.close()
     except OSError:
         pass
-print("Readable keyboards:", keyboards or "none")
+print("Readable input devices:", devices or "none")
 PY
 ```
 
@@ -107,11 +106,11 @@ Edit **Global** to change the always-active base prompt. Specialty profiles add 
 
 The **Web search** permission is off by default and is configured independently for Global and each specialty profile. When enabled, the model may use DDGS to search external providers; the recognized user request and generated search query leave the machine. Search results are limited to five short snippets and are passed to the model as untrusted reference data. VoxComm does not automatically open result URLs. Time-sensitive queries (for example, weather tomorrow or today's headlines) are searched immediately using the local system date; if the model says it does not know, VoxComm searches once and asks it to answer from the results. If the model still cannot answer, VoxComm displays the results with their source links.
 
-The general push-to-talk key defaults to F9. Click its field and press a key to capture it; Esc cancels. Each specialty profile may have its own **Profile hotkey**. Holding a hotkey records until release. Linux keyboards are read via `evdev`, so the key press is observed globally and is not blocked; it also reaches the foreground application. A key can only be assigned once. If keyboard access is unavailable, the application reports the issue; pure X11 sessions can fall back to `pynput`.
+The general push-to-talk binding defaults to F9. Click its field and press a keyboard key or controller button; Esc cancels. Use the adjacent **Remove hotkey** button to clear it. Each specialty profile may have its own **Profile hotkey**. Holding a binding records until release. VoxComm listens to matching `EV_KEY` events across readable `/dev/input` devices, so controller buttons are not tied to a device index. Keyboard presses are observed globally and are not blocked; they also reach the foreground application. A binding can only be assigned once. If input-device access is unavailable, the application reports the issue; pure X11 keyboard sessions can fall back to `pynput`.
 
 In **Tray mode**, clicking the tray icon starts recording and clicking again sends it. The flat tray menu contains recording, settings, replay and exit. Standard Linux tray APIs do not expose reliable press/release events, so the tray uses click-to-toggle rather than hold-to-record. If no system tray is available, VoxComm falls back to overlay mode. The text overlay still appears for status and responses without its buttons, then hides again after the text/audio finishes.
 
-Drag the overlay to move it; VoxComm saves and restores its coordinates. **Reset overlay position** returns it to the top center of the primary display if it has moved off-screen. Under Wayland/XWayland, placement and stacking can still depend on the compositor and game display mode. Joystick events are requested in the background so they can be received while a game has focus; set the joystick index to `-1` to disable joystick polling.
+Drag the overlay to move it; VoxComm saves and restores its coordinates. **Reset overlay position** returns it to the top center of the primary display if it has moved off-screen. Under Wayland/XWayland, placement and stacking can still depend on the compositor and game display mode.
 
 ## Future tool-use preflight
 
@@ -147,11 +146,11 @@ The offscreen Qt test platform can print harmless platform-plugin warnings. A na
 
 Project layout:
 
-- `src/sc_ai_copilot/app.py`: Qt overlay, tray, settings and interaction flow.
-- `src/sc_ai_copilot/audio.py`: microphone capture and PCM playback.
-- `src/sc_ai_copilot/ptt.py`: keyboard and joystick push-to-talk.
-- `src/sc_ai_copilot/providers/wyoming.py`: Wyoming Whisper and Piper protocol.
-- `src/sc_ai_copilot/providers/llm.py`: Ollama and llama.cpp clients.
-- `src/sc_ai_copilot/prompts.py`: prompt assembly and response-language selection.
-- `src/sc_ai_copilot/config.py`: TOML configuration and persistence.
+- `src/voxcomm/app.py`: Qt overlay, tray, settings and interaction flow.
+- `src/voxcomm/audio.py`: microphone capture and PCM playback.
+- `src/voxcomm/ptt.py`: keyboard and controller-button push-to-talk.
+- `src/voxcomm/providers/wyoming.py`: Wyoming Whisper and Piper protocol.
+- `src/voxcomm/providers/llm.py`: Ollama and llama.cpp clients.
+- `src/voxcomm/prompts.py`: prompt assembly and response-language selection.
+- `src/voxcomm/config.py`: TOML configuration and persistence.
 - `tests/`: unit and offscreen Qt lifecycle tests.

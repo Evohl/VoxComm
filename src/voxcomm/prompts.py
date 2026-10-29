@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sc_ai_copilot.config import DEFAULT_GLOBAL_PROMPT
+from voxcomm.config import DEFAULT_GLOBAL_PROMPT
 
 
 VOICE_LANGUAGE_NAMES = {

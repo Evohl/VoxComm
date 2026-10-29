@@ -2,11 +2,11 @@ import unittest
 from unittest.mock import Mock, patch
 from ddgs.exceptions import DDGSException
 
-from sc_ai_copilot.providers.web import MAX_QUERY_LENGTH, search_web
+from voxcomm.providers.web import MAX_QUERY_LENGTH, search_web
 
 
 class WebSearchTests(unittest.TestCase):
-    @patch("sc_ai_copilot.providers.web.DDGS")
+    @patch("voxcomm.providers.web.DDGS")
     def test_search_uses_bounded_safe_search_and_normalizes_results(self, ddgs):
         ddgs.return_value.text.return_value = [
             {"title": "Result", "href": "https://example.com", "body": "Snippet"},
@@ -25,7 +25,7 @@ class WebSearchTests(unittest.TestCase):
         )
         self.assertTrue(all(call.args == ("latest news",) for call in ddgs.return_value.text.call_args_list))
 
-    @patch("sc_ai_copilot.providers.web.DDGS")
+    @patch("voxcomm.providers.web.DDGS")
     def test_search_uses_results_when_another_backend_returns_no_results(self, ddgs):
         failing_backend = Mock()
         failing_backend.text.side_effect = DDGSException("No results found.")
@@ -40,7 +40,7 @@ class WebSearchTests(unittest.TestCase):
         self.assertEqual(results[0]["title"], "Headline")
         self.assertEqual(ddgs.call_count, 2)
 
-    @patch("sc_ai_copilot.providers.web.DDGS")
+    @patch("voxcomm.providers.web.DDGS")
     def test_search_rejects_empty_and_overlong_queries(self, ddgs):
         with self.assertRaises(ValueError):
             search_web("  ")

@@ -2,11 +2,11 @@ import unittest
 from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
-from sc_ai_copilot.providers.llm import _dated_search_query, chat, list_models
+from voxcomm.providers.llm import _dated_search_query, chat, list_models
 
 
 class ModelDiscoveryTests(unittest.TestCase):
-    @patch("sc_ai_copilot.providers.llm.httpx.post")
+    @patch("voxcomm.providers.llm.httpx.post")
     def test_chat_sends_system_prompt_before_user_message(self, post):
         response = Mock()
         response.json.return_value = {"message": {"content": "Hello"}}
@@ -22,10 +22,10 @@ class ModelDiscoveryTests(unittest.TestCase):
         self.assertEqual(messages[0], {"role": "system", "content": "Linux copilot system prompt"})
         self.assertEqual(messages[1], {"role": "user", "content": "Hi"})
 
-    @patch("sc_ai_copilot.providers.llm.search_web", return_value=[
+    @patch("voxcomm.providers.llm.search_web", return_value=[
         {"title": "Result", "url": "https://example.com", "snippet": "Found it"},
     ])
-    @patch("sc_ai_copilot.providers.llm.httpx.post")
+    @patch("voxcomm.providers.llm.httpx.post")
     def test_ollama_web_tool_round_trip(self, post, search):
         tool_response = Mock()
         tool_response.json.return_value = {"message": {
@@ -46,8 +46,8 @@ class ModelDiscoveryTests(unittest.TestCase):
         self.assertEqual(second_messages[-1]["role"], "tool")
         self.assertIn("https://example.com", second_messages[-1]["content"])
 
-    @patch("sc_ai_copilot.providers.llm.search_web")
-    @patch("sc_ai_copilot.providers.llm.httpx.post")
+    @patch("voxcomm.providers.llm.search_web")
+    @patch("voxcomm.providers.llm.httpx.post")
     def test_llama_cpp_web_tool_round_trip(self, post, search):
         search.return_value = []
         tool_response = Mock()
@@ -69,7 +69,7 @@ class ModelDiscoveryTests(unittest.TestCase):
         self.assertEqual(tool_message["role"], "tool")
         self.assertEqual(tool_message["tool_call_id"], "call-1")
 
-    @patch("sc_ai_copilot.providers.llm.httpx.post")
+    @patch("voxcomm.providers.llm.httpx.post")
     def test_disabled_web_tool_is_not_offered_to_model(self, post):
         response = Mock()
         response.json.return_value = {"message": {"content": "No search"}}
@@ -87,8 +87,8 @@ class ModelDiscoveryTests(unittest.TestCase):
         self.assertIn("28.10.2026", query)
         self.assertNotIn("29.10.2026", query)
 
-    @patch("sc_ai_copilot.providers.llm.search_web")
-    @patch("sc_ai_copilot.providers.llm._request", return_value={"content": "No live access"})
+    @patch("voxcomm.providers.llm.search_web")
+    @patch("voxcomm.providers.llm._request", return_value={"content": "No live access"})
     def test_time_sensitive_prompt_does_not_search_when_permission_is_disabled(self, request, search):
         answer = chat("ollama", "http://localhost:11434", "model", "Wie hat der FCK gestern gespielt?")
 
@@ -110,10 +110,10 @@ class ModelDiscoveryTests(unittest.TestCase):
         self.assertIn("Schlagzeilen des Tages", query)
         self.assertIn("29.10.2026", query)
 
-    @patch("sc_ai_copilot.providers.llm.search_web", return_value=[
+    @patch("voxcomm.providers.llm.search_web", return_value=[
         {"title": "Useful result", "url": "https://example.com/info", "snippet": "Relevant information."},
     ])
-    @patch("sc_ai_copilot.providers.llm._request", side_effect=[
+    @patch("voxcomm.providers.llm._request", side_effect=[
         {"content": "I don't know the answer."},
         {"content": "Here is what I found."},
     ])
@@ -130,8 +130,8 @@ class ModelDiscoveryTests(unittest.TestCase):
         self.assertEqual(retry_messages[-2]["role"], "assistant")
         self.assertIn("https://example.com/info", retry_messages[-1]["content"])
 
-    @patch("sc_ai_copilot.providers.llm.search_web")
-    @patch("sc_ai_copilot.providers.llm._request", return_value={"content": "The answer is 42."})
+    @patch("voxcomm.providers.llm.search_web")
+    @patch("voxcomm.providers.llm._request", return_value={"content": "The answer is 42."})
     def test_known_answer_does_not_trigger_fallback_search(self, request, search):
         answer = chat(
             "ollama", "http://localhost:11434", "model", "What is six times seven?",
@@ -141,8 +141,8 @@ class ModelDiscoveryTests(unittest.TestCase):
         self.assertEqual(answer, "The answer is 42.")
         search.assert_not_called()
 
-    @patch("sc_ai_copilot.providers.llm.search_web", return_value=[])
-    @patch("sc_ai_copilot.providers.llm._request")
+    @patch("voxcomm.providers.llm.search_web", return_value=[])
+    @patch("voxcomm.providers.llm._request")
     def test_tool_call_limit_bounds_repeated_model_requests(self, request, search):
         repeated_call = {"tool_calls": [{"function": {"name": "web_search", "arguments": {"query": "topic"}}}]}
         request.side_effect = [repeated_call] * 4
@@ -154,7 +154,7 @@ class ModelDiscoveryTests(unittest.TestCase):
         self.assertEqual(request.call_count, 4)
         self.assertIsNone(request.call_args_list[-1].args[4])
 
-    @patch("sc_ai_copilot.providers.llm.httpx.get")
+    @patch("voxcomm.providers.llm.httpx.get")
     def test_ollama_models_are_sorted(self, get):
         response = Mock()
         response.json.return_value = {"models": [{"name": "z-model"}, {"name": "a-model"}]}
@@ -166,7 +166,7 @@ class ModelDiscoveryTests(unittest.TestCase):
         get.assert_called_once_with("http://localhost:11434/api/tags", timeout=5)
         response.raise_for_status.assert_called_once_with()
 
-    @patch("sc_ai_copilot.providers.llm.httpx.get")
+    @patch("voxcomm.providers.llm.httpx.get")
     def test_llama_cpp_models_accept_v1_base_url(self, get):
         response = Mock()
         response.json.return_value = {"data": [{"id": "local-model"}]}

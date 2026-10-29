@@ -57,7 +57,7 @@ def make_app_icon() -> QIcon:
 
 def _launcher_command() -> str:
     script = Path(sys.executable).with_name(APP_ID)
-    command = str(script) if script.exists() else f"{sys.executable} -m sc_ai_copilot.app"
+    command = str(script) if script.exists() else f"{sys.executable} -m voxcomm.app"
     return command
 
 

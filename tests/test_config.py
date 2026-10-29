@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sc_ai_copilot.config import AppConfig, load_config, save_config
+from voxcomm.config import AppConfig, load_config, save_config
 
 
 class ConfigTests(unittest.TestCase):
@@ -15,7 +15,6 @@ class ConfigTests(unittest.TestCase):
                 global_prompt="Custom global prompt",
                 llm_model="qwen2.5",
                 ptt_key="F10",
-                joystick_device=1,
                 tray_mode=True,
                 overlay_x=-150,
                 overlay_y=250,

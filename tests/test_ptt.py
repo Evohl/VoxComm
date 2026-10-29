@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from evdev import ecodes
 
-from sc_ai_copilot.ptt import PttListener, evdev_key_code, evdev_key_name
+from voxcomm.ptt import PttListener, evdev_key_code, evdev_key_name
 
 
 class BrokenKeyboardListener:
@@ -46,17 +46,19 @@ class PttTests(unittest.TestCase):
         self.assertEqual(evdev_key_code("ctrl_l"), ecodes.KEY_LEFTCTRL)
         self.assertEqual(evdev_key_code("a"), ecodes.KEY_A)
         self.assertEqual(evdev_key_code("BRIGHTNESS_CYCLE"), ecodes.KEY_BRIGHTNESS_CYCLE)
+        self.assertEqual(evdev_key_code("btn_south"), ecodes.BTN_SOUTH)
         self.assertIsNone(evdev_key_code("gibt_es_nicht"))
 
     def test_captured_key_names_round_trip_to_codes(self):
-        for code in (ecodes.KEY_F9, ecodes.KEY_PAGEUP, ecodes.KEY_LEFTCTRL, ecodes.KEY_A, ecodes.KEY_BRIGHTNESS_CYCLE):
+        for code in (ecodes.KEY_F9, ecodes.KEY_PAGEUP, ecodes.KEY_LEFTCTRL, ecodes.KEY_A,
+                     ecodes.KEY_BRIGHTNESS_CYCLE, ecodes.BTN_SOUTH):
             self.assertEqual(evdev_key_code(evdev_key_name(code)), code)
 
     def test_evdev_events_drive_press_and_release_and_ignore_repeat(self):
         events = []
-        listener = PttListener("f9", -1, 0, lambda *event: events.append(event))
+        listener = PttListener("f9", lambda *event: events.append(event))
         keyboard = FakeKeyboard()
-        thread = threading.Thread(target=listener._watch_keyboards, args=({ecodes.KEY_F9: ""}, [keyboard]))
+        thread = threading.Thread(target=listener._watch_inputs, args=({ecodes.KEY_F9: ""}, [keyboard]))
         thread.start()
         try:
             keyboard.push(ecodes.KEY_A, 1)
@@ -77,7 +79,7 @@ class PttTests(unittest.TestCase):
 
     def test_profile_hotkey_reports_its_profile_and_only_it_releases(self):
         events = []
-        listener = PttListener("f9", -1, 0, lambda *event: events.append(event), {"F10": "Star Citizen"})
+        listener = PttListener("f9", lambda *event: events.append(event), {"F10": "Star Citizen"})
 
         listener._set(True, "Star Citizen")
         listener._set(True, "")
@@ -89,27 +91,44 @@ class PttTests(unittest.TestCase):
         self.assertFalse(listener.is_pressed())
 
     def test_general_hotkey_wins_when_a_profile_uses_the_same_key(self):
-        listener = PttListener("F9", -1, 0, lambda *_args: None, {"f9": "Star Citizen", "F10": "Elite"})
+        listener = PttListener("F9", lambda *_args: None, {"f9": "Star Citizen", "F10": "Elite"})
 
         self.assertEqual(listener._key_profiles(), {"f9": "", "f10": "Elite"})
 
-    def test_open_keyboards_maps_every_hotkey_and_rejects_unknown_keys(self):
-        listener = PttListener("F9", -1, 0, lambda *_args: None, {"F10": "Elite"})
+    def test_open_inputs_maps_every_binding_and_rejects_unknown_names(self):
+        listener = PttListener("F9", lambda *_args: None, {"F10": "Elite"})
         with patch("evdev.list_devices", return_value=[]):
-            codes, devices = listener._open_keyboards()
+            codes, devices = listener._open_inputs()
         self.assertEqual(codes, {ecodes.KEY_F9: "", ecodes.KEY_F10: "Elite"})
         self.assertEqual(devices, [])
 
-        broken = PttListener("F9", -1, 0, lambda *_args: None, {"nope": "Elite"})
+        broken = PttListener("F9", lambda *_args: None, {"nope": "Elite"})
         with self.assertRaises(ValueError):
-            broken._open_keyboards()
+            broken._open_inputs()
+
+    def test_open_inputs_discovers_gamepad_button_devices(self):
+        class FakeGamepad:
+            def capabilities(self):
+                return {ecodes.EV_KEY: [ecodes.BTN_SOUTH]}
+
+            def close(self):
+                self.closed = True
+
+        gamepad = FakeGamepad()
+        listener = PttListener("btn_south", lambda *_args: None)
+        with patch("evdev.list_devices", return_value=["/dev/input/event-gamepad"]):
+            with patch("evdev.InputDevice", return_value=gamepad):
+                codes, devices = listener._open_inputs()
+
+        self.assertEqual(codes, {ecodes.BTN_SOUTH: ""})
+        self.assertEqual(devices, [gamepad])
 
     def test_start_reports_missing_input_access_instead_of_failing(self):
         events = []
-        listener = PttListener("f9", -1, 0, lambda *event: events.append(event))
+        listener = PttListener("f9", lambda *event: events.append(event))
 
         with patch.dict("os.environ", {"WAYLAND_DISPLAY": "wayland-1"}):
-            with patch.object(listener, "_open_keyboards", side_effect=PermissionError("kein Zugriff")):
+            with patch.object(listener, "_open_inputs", side_effect=PermissionError("kein Zugriff")):
                 listener.start()
         listener.stop()
 
@@ -117,7 +136,7 @@ class PttTests(unittest.TestCase):
         self.assertTrue(any("kein Zugriff" in message for _kind, message in events))
 
     def test_stop_tolerates_keyboard_listener_initialization_failure(self):
-        listener = PttListener("f9", -1, 0, lambda *_args: None)
+        listener = PttListener("f9", lambda *_args: None)
         listener._keyboard = BrokenKeyboardListener()
 
         listener.stop()
@@ -126,7 +145,7 @@ class PttTests(unittest.TestCase):
         self.assertIsNone(listener._keyboard)
 
     def test_stop_is_idempotent(self):
-        listener = PttListener("f9", -1, 0, lambda *_args: None)
+        listener = PttListener("f9", lambda *_args: None)
         listener._keyboard = BrokenKeyboardListener()
 
         listener.stop()

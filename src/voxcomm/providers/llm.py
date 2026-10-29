@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 import httpx
 
-from sc_ai_copilot.providers.web import search_web
+from voxcomm.providers.web import search_web
 
 
 MAX_TOOL_CALLS = 3

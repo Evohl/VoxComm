@@ -4,20 +4,20 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 
-from PySide6.QtCore import QPoint, QPointF, QTimer, Qt
+from PySide6.QtCore import QAbstractAnimation, QPoint, QPointF, QTimer, Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFrame, QLabel, QMessageBox, QPushButton, QSystemTrayIcon, QToolButton, QWidget,
 )
 
-from sc_ai_copilot.app import (
+from voxcomm.app import (
     COMPACT_WIDTH, FULL_WIDTH, HIDE_DELAY_MS, TRANSCRIPT_MAX_HEIGHT, TYPE_INTERVAL_MS, HotkeyField, Overlay,
     SettingsDialog,
     configure_application, prefer_x11_on_wayland, transcript_segments,
 )
-from sc_ai_copilot.config import AppConfig
-from sc_ai_copilot.theme import rgba, system_accent, system_surface
+from voxcomm.config import AppConfig
+from voxcomm.theme import rgba, system_accent, system_surface
 
 
 class ApplicationLifecycleTests(unittest.TestCase):
@@ -55,8 +55,8 @@ class ApplicationLifecycleTests(unittest.TestCase):
 
     def test_rapid_ptt_cycles_use_independent_capture_stop_events(self):
         app = QApplication.instance() or QApplication([])
-        with patch("sc_ai_copilot.app.PttListener") as listener_class:
-            with patch("sc_ai_copilot.app.threading.Thread") as thread_class:
+        with patch("voxcomm.app.PttListener") as listener_class:
+            with patch("voxcomm.app.threading.Thread") as thread_class:
                 overlay = Overlay()
                 overlay._ptt_event("pressed", "")
                 first_stop = thread_class.call_args.kwargs["args"][0]
@@ -72,7 +72,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
 
     def test_tray_click_toggles_recording_and_menu_contains_requested_actions(self):
         app = QApplication.instance() or QApplication([])
-        with patch("sc_ai_copilot.app.PttListener"), patch("sc_ai_copilot.app.threading.Thread") as thread_class:
+        with patch("voxcomm.app.PttListener"), patch("voxcomm.app.threading.Thread") as thread_class:
             overlay = Overlay()
             overlay._tray_activated(QSystemTrayIcon.ActivationReason.Trigger)
             self.assertTrue(overlay._recording)
@@ -93,8 +93,8 @@ class ApplicationLifecycleTests(unittest.TestCase):
 
     def test_tray_mode_falls_back_to_overlay_without_system_tray(self):
         app = QApplication.instance() or QApplication([])
-        with patch("sc_ai_copilot.app.load_config", return_value=AppConfig(tray_mode=True)):
-            with patch("sc_ai_copilot.app.PttListener"):
+        with patch("voxcomm.app.load_config", return_value=AppConfig(tray_mode=True)):
+            with patch("voxcomm.app.PttListener"):
                 with patch.object(QSystemTrayIcon, "isSystemTrayAvailable", return_value=False):
                     overlay = Overlay()
                     self.assertFalse(overlay.config.tray_mode)
@@ -104,8 +104,8 @@ class ApplicationLifecycleTests(unittest.TestCase):
 
     def test_tray_mode_shows_text_overlay_without_buttons_then_hides_it(self):
         app = QApplication.instance() or QApplication([])
-        with patch("sc_ai_copilot.app.load_config", return_value=AppConfig(tray_mode=True)):
-            with patch("sc_ai_copilot.app.PttListener"):
+        with patch("voxcomm.app.load_config", return_value=AppConfig(tray_mode=True)):
+            with patch("voxcomm.app.PttListener"):
                 with patch.object(QSystemTrayIcon, "isSystemTrayAvailable", return_value=True):
                     overlay = Overlay()
                     self.assertFalse(overlay.isVisible())
@@ -120,6 +120,8 @@ class ApplicationLifecycleTests(unittest.TestCase):
 
                     self.assertTrue(overlay.isVisible())
                     self.assertTrue(all(button.isHidden() for button in (overlay.mic, overlay.say, overlay.settings_button)))
+                    self.assertEqual(overlay.width(), FULL_WIDTH)
+                    self.assertEqual(overlay.transcript.width(), FULL_WIDTH - 24)
                     overlay._clear_faded_text()
                     self.assertFalse(overlay.isVisible())
                     overlay.listener.stop()
@@ -139,11 +141,11 @@ class ApplicationLifecycleTests(unittest.TestCase):
 
     def test_hotkey_field_captures_pressed_key_and_cancel_keeps_value(self):
         app = QApplication.instance() or QApplication([])
-        field = HotkeyField("f9")
+        field = HotkeyField("f9", clearable=True)
         changes = []
         field.changed.connect(changes.append)
 
-        with patch("sc_ai_copilot.app.capture_key", return_value="PAGEUP"):
+        with patch("voxcomm.app.capture_input", return_value="PAGEUP"):
             field.button.click()
             self.assertTrue(field.button.capturing)
             for _ in range(100):
@@ -154,13 +156,17 @@ class ApplicationLifecycleTests(unittest.TestCase):
         self.assertEqual(field.value(), "pageup")
         self.assertEqual(field.button.text(), "PAGEUP")
         self.assertEqual(changes, ["pageup"])
+        self.assertIsNotNone(field.clear_button)
 
-        with patch("sc_ai_copilot.app.capture_key", return_value=None):
+        with patch("voxcomm.app.capture_input", return_value=None):
             field.button.click()
             for _ in range(10):
                 app.processEvents()
                 QTest.qWait(10)
         self.assertEqual(field.value(), "pageup")
+        field.clear_button.click()
+        self.assertEqual(field.value(), "")
+        self.assertEqual(changes, ["pageup", ""])
         field.deleteLater()
 
     def test_hotkey_field_reports_missing_keyboard_access(self):
@@ -169,7 +175,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
         errors = []
         field.error.connect(errors.append)
 
-        with patch("sc_ai_copilot.app.capture_key", side_effect=PermissionError("kein Zugriff")):
+        with patch("voxcomm.app.capture_input", side_effect=PermissionError("kein Zugriff")):
             field.button.click()
             for _ in range(100):
                 app.processEvents()
@@ -205,13 +211,13 @@ class ApplicationLifecycleTests(unittest.TestCase):
         dialog.key._apply("f10")
         self.assertEqual(dialog.key.value(), "F9")
 
-        with patch("sc_ai_copilot.app.QInputDialog.getText", return_value=("SC", True)):
+        with patch("voxcomm.app.QInputDialog.getText", return_value=("SC", True)):
             dialog._rename_special_profile()
         self.assertEqual(dialog.special_hotkeys["SC"], "f10")
         self.assertNotIn("Star Citizen", dialog.special_hotkeys)
         self.assertEqual(dialog.profile_hotkey.value(), "f10")
 
-        with patch("sc_ai_copilot.app.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+        with patch("voxcomm.app.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
             dialog._remove_special_profile()
         self.assertNotIn("SC", dialog.special_hotkeys)
 
@@ -220,14 +226,19 @@ class ApplicationLifecycleTests(unittest.TestCase):
         updated = dialog.apply(config)
         self.assertEqual(updated.special_hotkeys, {})
         self.assertEqual(updated.ptt_key, "F9")
+        self.assertIsNotNone(dialog.key.clear_button)
+        dialog.key.clear_button.click()
+        updated = dialog.apply(config)
+        self.assertEqual(updated.ptt_key, "")
+        self.assertFalse(hasattr(dialog, "device"))
         dialog.deleteLater()
 
     def test_profile_hotkey_selects_prompt_profile_for_recording(self):
         app = QApplication.instance() or QApplication([])
         config = AppConfig(special_prompts={"Star Citizen": "Ship context"}, special_hotkeys={"Star Citizen": "f10"})
-        with patch("sc_ai_copilot.app.load_config", return_value=config):
-            with patch("sc_ai_copilot.app.PttListener") as listener_class:
-                with patch("sc_ai_copilot.app.threading.Thread") as thread_class:
+        with patch("voxcomm.app.load_config", return_value=config):
+            with patch("voxcomm.app.PttListener") as listener_class:
+                with patch("voxcomm.app.threading.Thread") as thread_class:
                     overlay = Overlay()
                     self.assertEqual(listener_class.call_args.args[-1], {"f10": "Star Citizen"})
 
@@ -239,12 +250,12 @@ class ApplicationLifecycleTests(unittest.TestCase):
                     overlay.tray_icon.hide()
                     overlay.deleteLater()
 
-        with patch("sc_ai_copilot.app.load_config", return_value=config), patch("sc_ai_copilot.app.PttListener"):
+        with patch("voxcomm.app.load_config", return_value=config), patch("voxcomm.app.PttListener"):
             overlay = Overlay()
             prompts = []
-            with patch("sc_ai_copilot.app.record_until_released", return_value=b"x"), \
-                 patch("sc_ai_copilot.app.transcribe_sync", return_value="Hallo"), \
-                 patch("sc_ai_copilot.app.chat", side_effect=lambda *a, **k: prompts.append(k["system_prompt"]) or "Antwort"):
+            with patch("voxcomm.app.record_until_released", return_value=b"x"), \
+                 patch("voxcomm.app.transcribe_sync", return_value="Hallo"), \
+                 patch("voxcomm.app.chat", side_effect=lambda *a, **k: prompts.append(k["system_prompt"]) or "Antwort"):
                 overlay._capture(threading.Event(), "Star Citizen")
                 overlay._capture(threading.Event(), "")
             self.assertIn("Ship context", prompts[0])
@@ -256,8 +267,8 @@ class ApplicationLifecycleTests(unittest.TestCase):
     def test_overlay_restores_saved_position(self):
         app = QApplication.instance() or QApplication([])
         config = AppConfig(overlay_x=140, overlay_y=160)
-        with patch("sc_ai_copilot.app.load_config", return_value=config):
-            with patch("sc_ai_copilot.app.PttListener"), patch("sc_ai_copilot.app.save_config") as save_config:
+        with patch("voxcomm.app.load_config", return_value=config):
+            with patch("voxcomm.app.PttListener"), patch("voxcomm.app.save_config") as save_config:
                 overlay = Overlay()
                 self.assertEqual(overlay.pos(), QPoint(140, 160))
                 self.assertTrue(overlay.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
@@ -274,8 +285,8 @@ class ApplicationLifecycleTests(unittest.TestCase):
     def test_overlay_reset_button_returns_window_to_visible_default(self):
         app = QApplication.instance() or QApplication([])
         config = AppConfig(overlay_x=50000, overlay_y=50000)
-        with patch("sc_ai_copilot.app.load_config", return_value=config):
-            with patch("sc_ai_copilot.app.PttListener"), patch("sc_ai_copilot.app.save_config") as save_config:
+        with patch("voxcomm.app.load_config", return_value=config):
+            with patch("voxcomm.app.PttListener"), patch("voxcomm.app.save_config") as save_config:
                 overlay = Overlay()
                 area = QGuiApplication.primaryScreen().availableGeometry()
                 expected = QPoint(area.left() + (area.width() - overlay.width()) // 2, area.top() + 12)
@@ -292,7 +303,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
 
     def test_overlay_is_translucent_and_hides_after_completed_answer(self):
         app = QApplication.instance() or QApplication([])
-        with patch("sc_ai_copilot.app.PttListener"):
+        with patch("voxcomm.app.PttListener"):
             overlay = Overlay()
             self.assertTrue(overlay.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground))
             self.assertTrue(overlay.windowFlags() & Qt.WindowType.FramelessWindowHint)
@@ -327,8 +338,8 @@ class ApplicationLifecycleTests(unittest.TestCase):
 
     def test_overlay_starts_compact_and_grows_with_output(self):
         app = QApplication.instance() or QApplication([])
-        with patch("sc_ai_copilot.app.load_config", return_value=AppConfig()):
-            with patch("sc_ai_copilot.app.PttListener"):
+        with patch("voxcomm.app.load_config", return_value=AppConfig()):
+            with patch("voxcomm.app.PttListener"):
                 overlay = Overlay()
                 overlay.show()
                 self.assertEqual(overlay.width(), COMPACT_WIDTH)
@@ -342,9 +353,37 @@ class ApplicationLifecycleTests(unittest.TestCase):
                 overlay.listener.stop()
                 overlay.deleteLater()
 
+    def test_stale_hide_timeout_does_not_fade_while_output_is_typing(self):
+        app = QApplication.instance() or QApplication([])
+        with patch("voxcomm.app.PttListener"), patch("voxcomm.app.threading.Thread"):
+            overlay = Overlay()
+            overlay.show()
+            overlay._show_message("Bereit · Antwort lokal erzeugt", "A.I.: " + "Lange Antwort " * 20)
+            overlay._start_speak("Lange Antwort")
+            overlay._hide_timer.start()
+
+            overlay._hide_timer.timeout.emit()
+            overlay._hide_timer.stop()
+
+            self.assertTrue(overlay._type_timer.isActive())
+            self.assertNotEqual(overlay._fade_animation.state(), QAbstractAnimation.State.Running)
+            while overlay._type_timer.isActive():
+                overlay._type_next_character()
+            self.assertFalse(overlay._hide_timer.isActive())
+
+            overlay._hide_timer.start()
+            overlay._hide_timer.timeout.emit()
+            overlay._hide_timer.stop()
+            self.assertNotEqual(overlay._fade_animation.state(), QAbstractAnimation.State.Running)
+
+            overlay.events.speech_finished.emit()
+            self.assertTrue(overlay._hide_timer.isActive())
+            overlay.listener.stop()
+            overlay.deleteLater()
+
     def test_status_only_message_hides_again_and_shrinks(self):
         app = QApplication.instance() or QApplication([])
-        with patch("sc_ai_copilot.app.PttListener"):
+        with patch("voxcomm.app.PttListener"):
             overlay = Overlay()
             overlay.show()
             overlay._show_message("Bereit · keine Sprache erkannt", "")
@@ -360,7 +399,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
 
     def test_play_shows_last_text_again_and_hides_after_audio(self):
         app = QApplication.instance() or QApplication([])
-        with patch("sc_ai_copilot.app.PttListener"), patch("sc_ai_copilot.app.threading.Thread"):
+        with patch("voxcomm.app.PttListener"), patch("voxcomm.app.threading.Thread"):
             overlay = Overlay()
             overlay.show()
             full_text = "Du: Test?\nA.I.: Antwort"
@@ -388,7 +427,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
 
     def test_answer_types_slowly_and_scrolls_when_long(self):
         app = QApplication.instance() or QApplication([])
-        with patch("sc_ai_copilot.app.PttListener"):
+        with patch("voxcomm.app.PttListener"):
             overlay = Overlay()
             overlay.show()
             long_text = "Du: Frage\nA.I.: " + "\n".join(f"Zeile {number}" for number in range(60))
@@ -413,7 +452,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
 
     def test_overlay_hides_only_after_audio_output_finished(self):
         app = QApplication.instance() or QApplication([])
-        with patch("sc_ai_copilot.app.PttListener"), patch("sc_ai_copilot.app.threading.Thread"):
+        with patch("voxcomm.app.PttListener"), patch("voxcomm.app.threading.Thread"):
             overlay = Overlay()
             overlay.show()
             overlay._show_message("Bereit · Antwort lokal erzeugt", "Du: Test?\nA.I.: Antwort")
@@ -431,7 +470,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
 
     def test_overlay_waits_for_typing_when_audio_finishes_first(self):
         app = QApplication.instance() or QApplication([])
-        with patch("sc_ai_copilot.app.PttListener"), patch("sc_ai_copilot.app.threading.Thread"):
+        with patch("voxcomm.app.PttListener"), patch("voxcomm.app.threading.Thread"):
             overlay = Overlay()
             overlay.show()
             overlay._show_message("Bereit · Antwort lokal erzeugt", "Du: Test?\nA.I.: Antwort")
@@ -448,7 +487,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
 
     def test_ai_output_is_labeled_and_colored_apart_from_user_input(self):
         app = QApplication.instance() or QApplication([])
-        with patch("sc_ai_copilot.app.PttListener"):
+        with patch("voxcomm.app.PttListener"):
             overlay = Overlay()
             overlay.show()
             text = "Du: Frage?\nA.I.: Antwort"
@@ -483,7 +522,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
 
     def test_drag_handle_moves_overlay_when_system_move_is_unavailable(self):
         app = QApplication.instance() or QApplication([])
-        with patch("sc_ai_copilot.app.PttListener"), patch("sc_ai_copilot.app.save_config"):
+        with patch("voxcomm.app.PttListener"), patch("voxcomm.app.save_config"):
             overlay = Overlay()
             overlay.show()
             overlay.status.clear()

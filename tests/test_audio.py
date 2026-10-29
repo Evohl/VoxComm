@@ -3,7 +3,7 @@ import unittest
 import wave
 from pathlib import Path
 
-from sc_ai_copilot.audio import save_wav
+from voxcomm.audio import save_wav
 
 
 class AudioTests(unittest.TestCase):

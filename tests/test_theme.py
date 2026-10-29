@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 
-from sc_ai_copilot.theme import dialog_stylesheet, glyph_path, make_icon, read_kde_color
+from voxcomm.theme import dialog_stylesheet, glyph_path, make_icon, read_kde_color
 from PySide6.QtGui import QColor, QImage
 
 

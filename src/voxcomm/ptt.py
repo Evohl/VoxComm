@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import selectors
 import threading
-import time
 
 _KEY_ALIASES = {
     "ctrl": "LEFTCTRL", "ctrl_l": "LEFTCTRL", "ctrl_r": "RIGHTCTRL",
@@ -14,13 +13,15 @@ _KEY_ALIASES = {
 
 
 def evdev_key_code(name: str) -> int | None:
-    """Übersetzt Namen wie "F9", "ctrl_l" oder "page_up" in einen evdev-Tastencode."""
+    """Map keyboard and gamepad button names to evdev input codes."""
     from evdev import ecodes
 
     token = name.strip().upper().removeprefix("KEY_")
     token = _KEY_ALIASES.get(token.lower(), token)
     for candidate in (token, token.replace("_", "")):
         code = getattr(ecodes, f"KEY_{candidate}", None)
+        if not isinstance(code, int):
+            code = getattr(ecodes, candidate, None)
         if isinstance(code, int):
             return code
     return None
@@ -29,15 +30,15 @@ def evdev_key_code(name: str) -> int | None:
 def evdev_key_name(code: int) -> str | None:
     from evdev import ecodes
 
-    names = ecodes.KEY.get(code)
+    names = ecodes.KEY.get(code) or ecodes.BTN.get(code)
     if names is None:
         return None
     name = names[-1] if isinstance(names, (list, tuple)) else names
     return name.removeprefix("KEY_")
 
 
-def capture_key(stop: threading.Event, timeout: float = 15.0) -> str | None:
-    """Wartet auf den nächsten Tastendruck; Esc, Abbruch oder Zeitüberschreitung liefern None."""
+def capture_input(stop: threading.Event, timeout: float = 15.0) -> str | None:
+    """Capture the next keyboard key or gamepad button from readable input devices."""
     from evdev import InputDevice, ecodes, list_devices
 
     selector = selectors.DefaultSelector()
@@ -46,13 +47,13 @@ def capture_key(stop: threading.Event, timeout: float = 15.0) -> str | None:
             device = InputDevice(path)
         except OSError:
             continue
-        if ecodes.KEY_A in device.capabilities().get(ecodes.EV_KEY, []):
+        if device.capabilities().get(ecodes.EV_KEY):
             selector.register(device, selectors.EVENT_READ)
         else:
             device.close()
     if not selector.get_map():
         selector.close()
-        raise PermissionError("Keine lesbare Tastatur gefunden (Benutzer muss in der Gruppe 'input' sein)")
+        raise PermissionError("Keine lesbaren Eingabegeräte gefunden (Zugriff auf /dev/input erforderlich)")
     deadline = time.monotonic() + timeout
     try:
         while not stop.is_set() and time.monotonic() < deadline:
@@ -73,12 +74,10 @@ def capture_key(stop: threading.Event, timeout: float = 15.0) -> str | None:
 
 
 class PttListener:
-    def __init__(self, key: str, device_index: int, button: int, on_change, extra_keys: dict[str, str] | None = None):
+    def __init__(self, key: str, on_change, extra_keys: dict[str, str] | None = None):
         self.key = key.lower()
         # Zusatz-Hotkeys: Taste -> Profilname; der allgemeine Hotkey meldet das Profil "".
         self.extra_keys = {name.lower(): profile for name, profile in (extra_keys or {}).items() if name}
-        self.device_index = device_index
-        self.button = button
         self.on_change = on_change
         self._pressed = threading.Event()
         self._profile = ""
@@ -87,27 +86,25 @@ class PttListener:
         self._keyboard = None
 
     def _key_profiles(self) -> dict[str, str]:
-        profiles = {self.key: ""}
+        profiles = {self.key: ""} if self.key else {}
         for name, profile in self.extra_keys.items():
             profiles.setdefault(name, profile)
         return profiles
 
     def start(self) -> None:
-        self._start_keyboard()
-        if self.device_index >= 0:
-            thread = threading.Thread(target=self._watch_joystick, daemon=True)
-            thread.start()
-            self._threads.append(thread)
+        self._start_input_devices()
 
-    def _open_keyboards(self):
+    def _open_inputs(self):
         from evdev import InputDevice, ecodes, list_devices
 
         codes = {}
         for name, profile in self._key_profiles().items():
             code = evdev_key_code(name)
             if code is None:
-                raise ValueError(f"unbekannte Taste '{name}'")
+                raise ValueError(f"unbekannte Eingabe '{name}'")
             codes.setdefault(code, profile)
+        if not codes:
+            return codes, []
         devices, denied = [], False
         for path in list_devices():
             try:
@@ -122,23 +119,25 @@ class PttListener:
             else:
                 device.close()
         if not devices and denied:
-            raise PermissionError("kein Zugriff auf /dev/input (Benutzer muss in der Gruppe 'input' sein)")
+            raise PermissionError("kein Zugriff auf /dev/input (Zugriff auf Eingabegeräte erforderlich)")
         return codes, devices
 
-    def _start_keyboard(self) -> None:
+    def _start_input_devices(self) -> None:
         try:
-            codes, devices = self._open_keyboards()
+            codes, devices = self._open_inputs()
+            if not codes:
+                return
             if devices:
-                thread = threading.Thread(target=self._watch_keyboards, args=(codes, devices), daemon=True)
+                thread = threading.Thread(target=self._watch_inputs, args=(codes, devices), daemon=True)
                 thread.start()
                 self._threads.append(thread)
                 return
-            reason = "keine Tastatur mit den Hotkeys gefunden"
+            reason = "kein Eingabegerät mit den Hotkeys gefunden"
         except Exception as error:
             reason = str(error) or type(error).__name__
         if os.environ.get("WAYLAND_DISPLAY"):
             # pynput sieht unter Wayland nur Tasten fokussierter X11-Fenster.
-            self.on_change("error", f"Globale Tastatur-PTT nicht verfügbar: {reason}; nutze den Overlay-PTT-Button")
+            self.on_change("error", f"Globale PTT nicht verfügbar: {reason}; nutze den Overlay-PTT-Button")
         else:
             try:
                 from pynput import keyboard
@@ -155,7 +154,7 @@ class PttListener:
             except Exception as error:
                 self.on_change("error", f"Tastatur-PTT nicht verfügbar ({reason}; {error})")
 
-    def _watch_keyboards(self, codes: dict[int, str], devices: list) -> None:
+    def _watch_inputs(self, codes: dict[int, str], devices: list) -> None:
         from evdev import ecodes
 
         selector = selectors.DefaultSelector()
@@ -174,7 +173,7 @@ class PttListener:
                         selector.unregister(device)
                         device.close()
             if not self._stop.is_set():
-                self.on_change("error", "Tastatur für die PTT-Taste wurde getrennt")
+                self.on_change("error", "Eingabegerät für die PTT-Belegung wurde getrennt")
         finally:
             for key in list(selector.get_map().values()):
                 key.fileobj.close()
@@ -190,9 +189,6 @@ class PttListener:
         elif self._pressed.is_set() and profile == self._profile:
             self._pressed.clear()
             self.on_change("released", profile)
-
-    def is_pressed(self) -> bool:
-        return self._pressed.is_set() and not self._stop.is_set()
 
     def stop(self) -> None:
         self._stop.set()
@@ -210,25 +206,9 @@ class PttListener:
             if thread is not threading.current_thread():
                 thread.join(timeout=1)
 
-    def _watch_joystick(self) -> None:
-        try:
-            # Ohne diesen Hinweis liefert SDL Joystick-Events nur bei fokussiertem Fenster, also nicht im Spiel.
-            os.environ.setdefault("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1")
-            import pygame
+    def is_pressed(self) -> bool:
+        return self._pressed.is_set() and not self._stop.is_set()
 
-            pygame.init()
-            pygame.joystick.init()
-            if self.device_index >= pygame.joystick.get_count():
-                self.on_change("error", "Joystick-Index ist nicht vorhanden")
-                return
-            joystick = pygame.joystick.Joystick(self.device_index)
-            joystick.init()
-            while not self._stop.is_set():
-                for event in pygame.event.get():
-                    if event.type == pygame.JOYBUTTONDOWN and event.button == self.button:
-                        self._set(True)
-                    elif event.type == pygame.JOYBUTTONUP and event.button == self.button:
-                        self._set(False)
-                time.sleep(0.01)
-        except Exception as error:
-            self.on_change("error", f"Joystick-PTT nicht verfügbar: {error}")
+
+capture_key = capture_input
+

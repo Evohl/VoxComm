@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime, timezone
 
-from sc_ai_copilot.prompts import build_system_prompt, response_language_for_voice
+from voxcomm.prompts import build_system_prompt, response_language_for_voice
 
 
 class PromptTests(unittest.TestCase):

@@ -13,14 +13,14 @@ from PySide6.QtWidgets import (
     QPlainTextEdit, QPushButton, QSpinBox, QSystemTrayIcon, QTextEdit, QToolButton, QVBoxLayout, QWidget,
 )
 
-from sc_ai_copilot.audio import play_pcm, record_until_released, save_wav
-from sc_ai_copilot.branding import APP_ID, APP_NAME, install_launcher, make_app_icon
-from sc_ai_copilot.config import AppConfig, load_config, save_config
-from sc_ai_copilot.providers.llm import chat, list_models
-from sc_ai_copilot.providers.wyoming import filter_voices, list_voices, speak_sync, transcribe_sync, voice_language
-from sc_ai_copilot.prompts import VOICE_LANGUAGE_NAMES, build_system_prompt, response_language_for_voice
-from sc_ai_copilot.ptt import PttListener, capture_key
-from sc_ai_copilot.theme import dialog_stylesheet, make_icon, mix_colors, rgba, system_accent, system_surface, system_text
+from voxcomm.audio import play_pcm, record_until_released, save_wav
+from voxcomm.branding import APP_ID, APP_NAME, install_launcher, make_app_icon
+from voxcomm.config import AppConfig, load_config, save_config
+from voxcomm.providers.llm import chat, list_models
+from voxcomm.providers.wyoming import filter_voices, list_voices, speak_sync, transcribe_sync, voice_language
+from voxcomm.prompts import VOICE_LANGUAGE_NAMES, build_system_prompt, response_language_for_voice
+from voxcomm.ptt import PttListener, capture_input
+from voxcomm.theme import dialog_stylesheet, make_icon, mix_colors, rgba, system_accent, system_surface, system_text
 
 
 LANGUAGE_LABELS = VOICE_LANGUAGE_NAMES
@@ -52,6 +52,7 @@ def transcript_segments(text: str) -> list[tuple[str, str]]:
 # 3 Buttons à 44 px + 2 Abstände à 10 px + Seitenränder
 COMPACT_WIDTH = 3 * 44 + 2 * 10 + 24
 FULL_WIDTH = COMPACT_WIDTH + 10 + TRANSCRIPT_WIDTH
+OVERLAY_HORIZONTAL_MARGINS = 24
 
 
 class Events(QObject):
@@ -94,7 +95,7 @@ class HotkeyField(QWidget):
         self._signals.failed.connect(self._fail)
         self.button = _CaptureButton()
         self.button.setAutoDefault(False)
-        self.button.setToolTip("Klicken und dann die gewünschte Taste drücken. Esc bricht ab.")
+        self.button.setToolTip("Klicken und eine Taste oder einen Controller-Button drücken. Esc bricht ab.")
         self.button.clicked.connect(self._toggle_capture)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -133,7 +134,7 @@ class HotkeyField(QWidget):
 
     def _render(self) -> None:
         if self._stop is not None:
-            self.button.setText("Taste drücken …")
+            self.button.setText("Taste / Button drücken …")
         else:
             self.button.setText(self._value.upper() if self._value else "Nicht belegt")
         if self.clear_button is not None:
@@ -150,7 +151,7 @@ class HotkeyField(QWidget):
 
         def run():
             try:
-                result = capture_key(stop) or ""
+                result = capture_input(stop) or ""
                 if not stop.is_set():
                     signals.done.emit(result)
             except RuntimeError:
@@ -271,13 +272,7 @@ class SettingsDialog(QDialog):
         self.model = QComboBox()
         self.model.setEditable(True)
         self.model.setCurrentText(config.llm_model)
-        self.key = HotkeyField(config.ptt_key, validator=self._general_hotkey_conflict)
-        self.device = QSpinBox()
-        self.device.setRange(-1, 32)
-        self.device.setValue(config.joystick_device)
-        self.button = QSpinBox()
-        self.button.setRange(0, 128)
-        self.button.setValue(config.joystick_button)
+        self.key = HotkeyField(config.ptt_key, clearable=True, validator=self._general_hotkey_conflict)
         self.sample_rate = QSpinBox()
         self.sample_rate.setRange(8000, 48000)
         self.sample_rate.setSingleStep(8000)
@@ -305,8 +300,7 @@ class SettingsDialog(QDialog):
         left = QVBoxLayout()
         left.setSpacing(14)
         left.addWidget(self._section("Eingabe", [
-            ("Push-to-talk-Hotkey", self.key), ("Joystick (-1 = aus)", self.device),
-            ("Joystick-Taste", self.button), ("Mikrofon-Samplerate", self.sample_rate),
+            ("PTT-Taste / Button", self.key), ("Mikrofon-Samplerate", self.sample_rate),
             (None, self.tray_mode), (None, self.reset_position),
         ]))
         left.addWidget(self._section("Spracherkennung", [
@@ -594,8 +588,7 @@ class SettingsDialog(QDialog):
         config.auto_speak = self.auto_speak.isChecked()
         config.tray_mode = self.tray_mode.isChecked()
         config.llm_provider, config.llm_url, config.llm_model = self.provider.currentText(), self.llm_url.text(), self.model.currentText()
-        config.ptt_key, config.joystick_device = self.key.value(), self.device.value()
-        config.joystick_button, config.sample_rate = self.button.value(), self.sample_rate.value()
+        config.ptt_key, config.sample_rate = self.key.value(), self.sample_rate.value()
         return config
 
     @property
@@ -738,6 +731,7 @@ class Overlay(QMainWindow):
         self._typing_text = ""
         self._typing_index = 0
         self._hide_after_typing = False
+        self._buttons_visible = True
         self._speech_jobs = 0
         self._recording = False
         self._capture_stop = None
@@ -781,20 +775,25 @@ class Overlay(QMainWindow):
 
     def _apply_display_mode(self):
         buttons_visible = not self.config.tray_mode
+        self._buttons_visible = buttons_visible
         for button in (self.mic, self.say, self.settings_button):
             button.setVisible(buttons_visible)
         if self.config.tray_mode:
             if not QSystemTrayIcon.isSystemTrayAvailable():
                 self.config.tray_mode = False
+                self._buttons_visible = True
                 for button in (self.mic, self.say, self.settings_button):
                     button.setVisible(True)
                 self.tray_icon.hide()
+                self._fit_to_content()
                 self.show()
                 self._set_status("System-Tray nicht verfügbar · Overlay-Modus aktiviert")
                 return
+            self._fit_to_content()
             self.tray_icon.show()
             self.hide()
             return
+        self._fit_to_content()
         self.tray_icon.hide()
         self.show()
 
@@ -816,8 +815,7 @@ class Overlay(QMainWindow):
     def _make_listener(self):
         extra_keys = {key: name for name, key in self.config.special_hotkeys.items()
                       if key and name in self.config.special_prompts}
-        return PttListener(self.config.ptt_key, self.config.joystick_device, self.config.joystick_button,
-                           lambda kind, text: self.events.ptt.emit(kind, text), extra_keys)
+        return PttListener(self.config.ptt_key, lambda kind, text: self.events.ptt.emit(kind, text), extra_keys)
 
     def _apply_theme(self):
         accent, surface, text = system_accent(), system_surface(), system_text()
@@ -972,6 +970,12 @@ class Overlay(QMainWindow):
         height = int(self.transcript.document().size().height() + 0.999) if self.transcript.toPlainText() else 0
         transcript_height = min(height, TRANSCRIPT_MAX_HEIGHT)
         self.transcript.setFixedHeight(transcript_height)
+        transcript_width = (
+            TRANSCRIPT_WIDTH
+            if self._buttons_visible
+            else FULL_WIDTH - OVERLAY_HORIZONTAL_MARGINS
+        )
+        self.transcript.setFixedWidth(transcript_width)
         scroll_bar = self.transcript.verticalScrollBar()
         scroll_bar.setValue(scroll_bar.maximum())
         self.setFixedWidth(FULL_WIDTH if has_text else COMPACT_WIDTH)
@@ -1030,7 +1034,14 @@ class Overlay(QMainWindow):
         self._schedule_hide()
 
     def _fade_out(self):
-        if self.isVisible() and (self.status.text() or self.transcript.toPlainText()):
+        if (
+            self.isVisible()
+            and self._hide_after_typing
+            and not self._recording
+            and self._speech_jobs == 0
+            and not self._type_timer.isActive()
+            and (self.status.text() or self.transcript.toPlainText())
+        ):
             self._fade_animation.start()
 
     def _clear_faded_text(self):
