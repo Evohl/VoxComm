@@ -18,6 +18,7 @@ from voxcomm.audio import play_pcm, record_until_released, save_wav
 from voxcomm.branding import APP_ID, APP_NAME, install_launcher, make_app_icon
 from voxcomm.config import AppConfig, load_config, save_config
 from voxcomm.mangohud import publish_status
+from voxcomm.providers import cloud, openai_tts, whisper_cpp
 from voxcomm.providers.llm import chat, list_models
 from voxcomm.providers.wyoming import filter_voices, list_voices, speak_sync, transcribe_sync, voice_language
 from voxcomm.prompts import VOICE_LANGUAGE_NAMES, build_system_prompt, response_language_for_voice
@@ -33,6 +34,9 @@ TRANSCRIPT_WIDTH = 480
 TRANSCRIPT_MAX_HEIGHT = 200
 HIDE_DELAY_MS = 3000
 THINKING_STATUS = "Denke nach …"
+SPEAKING_STATUS = "Spricht …"
+WHISPER_CPP_DEFAULT_URL = "http://127.0.0.1:8081"
+OPENAI_TTS_DEFAULT_URL = "http://127.0.0.1:8097"
 SETTINGS_LABEL_WIDTH = 140
 SETTINGS_ICON_BUTTON = 33
 USER_PREFIX = "Du: "
@@ -205,12 +209,17 @@ class HotkeyField(QWidget):
 class SettingsDialog(QDialog):
     def __init__(self, config: AppConfig, parent=None):
         super().__init__(parent)
+        self._response_language_fallback = config.response_language
         self.setWindowTitle(f"Einstellungen · {APP_NAME}")
         self.setMinimumWidth(880)
         self.setStyleSheet(dialog_stylesheet(system_accent(), system_surface(), system_text()))
         self.discovery = Events()
         self.discovery.discovery.connect(self._discovery_result)
         self.stt = QLineEdit(config.stt_url)
+        self.stt_provider = QComboBox()
+        self.stt_provider.addItem("Wyoming", "wyoming")
+        self.stt_provider.addItem("whisper.cpp-Server", "whisper.cpp")
+        self.stt_provider.setCurrentIndex(max(self.stt_provider.findData(config.stt_provider), 0))
         self.stt_language = QComboBox()
         self.stt_language.addItem("Automatisch", "auto")
         for code, label in LANGUAGE_LABELS.items():
@@ -218,6 +227,15 @@ class SettingsDialog(QDialog):
         stt_language_index = self.stt_language.findData(config.stt_language)
         self.stt_language.setCurrentIndex(max(stt_language_index, 0))
         self.tts = QLineEdit(config.tts_url)
+        self.tts_provider = QComboBox()
+        self.tts_provider.addItem("Wyoming Piper", "wyoming")
+        self.tts_provider.addItem("OpenAI-kompatibel (qwentts u. a.)", "openai")
+        self.tts_provider.setCurrentIndex(max(self.tts_provider.findData(config.tts_provider), 0))
+        self.tts_language = QComboBox()
+        self.tts_language.addItem("Dienst-Standard", "")
+        for label in VOICE_LANGUAGE_NAMES.values():
+            self.tts_language.addItem(label, label)
+        self.tts_language.setCurrentIndex(max(self.tts_language.findData(config.tts_language), 0))
         self._available_voices: list[str] = []
         self.voice_language = QComboBox()
         self.voice_language.addItem("Alle Sprachen", "")
@@ -282,9 +300,21 @@ class SettingsDialog(QDialog):
         profile_row.addWidget(self.remove_profile, 1)
         self._update_profile_controls()
         self.provider = QComboBox()
-        self.provider.addItems(["ollama", "llama.cpp"])
-        self.provider.setCurrentText(config.llm_provider)
+        self.provider.addItem("Ollama (lokal)", "ollama")
+        self.provider.addItem("Ollama Cloud", "ollama-cloud")
+        self.provider.addItem("llama.cpp", "llama.cpp")
+        self.provider.setCurrentIndex(max(self.provider.findData(config.llm_provider), 0))
         self.llm_url = QLineEdit(config.llm_url)
+        self.api_key = QLineEdit(config.ollama_api_key)
+        self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.api_key.setPlaceholderText("API-Schlüssel von ollama.com/settings/keys")
+        self.key_test = QPushButton("Schlüssel prüfen")
+        self.key_row = QWidget()
+        key_layout = QHBoxLayout(self.key_row)
+        key_layout.setContentsMargins(0, 0, 0, 0)
+        key_layout.setSpacing(8)
+        key_layout.addWidget(self.api_key, 1)
+        key_layout.addWidget(self.key_test)
         self.model = QComboBox()
         self.model.setEditable(True)
         self.model.setCurrentText(config.llm_model)
@@ -319,19 +349,24 @@ class SettingsDialog(QDialog):
             ("PTT-Taste / Button", self.key), ("Mikrofon-Samplerate", self.sample_rate),
             (None, self.tray_mode), (None, self.reset_position),
         ]))
-        left.addWidget(self._section("Spracherkennung", [
-            ("Wyoming Whisper", self.stt), ("Erkennungssprache", self.stt_language),
-        ]))
-        left.addWidget(self._section("Sprachmodell", [
+        self.stt_section = self._section("Spracherkennung", [
+            ("Schnittstelle", self.stt_provider), ("URL", self.stt), ("Erkennungssprache", self.stt_language),
+        ])
+        left.addWidget(self.stt_section)
+        self.llm_section = self._section("Sprachmodell", [
             ("Anbieter", self.provider), ("URL", self.llm_url), ("Modell", model_row),
-        ]))
+            ("API-Schlüssel", self.key_row),
+        ])
+        left.addWidget(self.llm_section)
         left.addStretch(1)
         right = QVBoxLayout()
         right.setSpacing(14)
-        right.addWidget(self._section("Sprachausgabe", [
-            ("Wyoming Piper", self.tts), ("Stimmen-Sprache", self.voice_language), ("Stimme", voice_row),
+        self.tts_section = self._section("Sprachausgabe", [
+            ("Schnittstelle", self.tts_provider), ("URL", self.tts), ("TTS-Sprache", self.tts_language),
+            ("Stimmen-Sprache", self.voice_language), ("Stimme", voice_row),
             ("Antwortsprache", self.response_language), (None, self.auto_speak),
-        ]))
+        ])
+        right.addWidget(self.tts_section)
         right.addWidget(self._section("Prompt", [
             ("Profil", self.special_profile), (None, profile_row), ("Profil-Hotkey", self.profile_hotkey),
             (None, self.web_search), (None, self.input_control),
@@ -348,6 +383,14 @@ class SettingsDialog(QDialog):
         self.discovery_status.setWordWrap(True)
         self.key.error.connect(self.discovery_status.setText)
         self.profile_hotkey.error.connect(self.discovery_status.setText)
+        self.provider.currentIndexChanged.connect(self._update_llm_fields)
+        self.tts_provider.currentIndexChanged.connect(self._update_tts_fields)
+        self.stt_provider.currentIndexChanged.connect(self._update_stt_fields)
+        self.tts_language.currentIndexChanged.connect(lambda: self._update_response_language(self.voice.currentText()))
+        self.key_test.clicked.connect(self._test_api_key)
+        self._update_stt_fields()
+        self._update_tts_fields()
+        self._update_llm_fields()
         save = QPushButton("Speichern")
         save.setObjectName("primary")
         save.setDefault(True)
@@ -394,10 +437,75 @@ class SettingsDialog(QDialog):
                 caption.setFixedWidth(SETTINGS_LABEL_WIDTH)
                 form.addRow(caption, field)
         layout.addLayout(form)
+        frame.form = form
         return frame
 
     def _update_response_language(self, voice_name: str):
-        self.response_language.setText(response_language_for_voice(voice_name))
+        if self.tts_provider.currentData() == "openai":
+            text = self.tts_language.currentData() or self._response_language_fallback
+        else:
+            text = response_language_for_voice(voice_name, self._response_language_fallback)
+        self.response_language.setText(text)
+
+    def _update_llm_fields(self):
+        cloud_mode = self.provider.currentData() == "ollama-cloud"
+        self.llm_section.form.setRowVisible(self.key_row, cloud_mode)
+        current = self.llm_url.text().strip()
+        if cloud_mode and current in ("", "http://127.0.0.1:11434"):
+            self.llm_url.setText(cloud.CLOUD_BASE_URL)
+        elif not cloud_mode and current == cloud.CLOUD_BASE_URL:
+            self.llm_url.setText("http://127.0.0.1:11434")
+        if cloud_mode:
+            self._load_cloud_models()
+
+    def _update_tts_fields(self):
+        openai_mode = self.tts_provider.currentData() == "openai"
+        self.tts_section.form.setRowVisible(self.voice_language, not openai_mode)
+        current = self.tts.text().strip()
+        if openai_mode and current in ("", "tcp://127.0.0.1:10200"):
+            self.tts.setText(OPENAI_TTS_DEFAULT_URL)
+        elif not openai_mode and current == OPENAI_TTS_DEFAULT_URL:
+            self.tts.setText("tcp://127.0.0.1:10200")
+        self._refresh_voice_options()
+        self._update_response_language(self.voice.currentText())
+
+    def _update_stt_fields(self):
+        whisper_mode = self.stt_provider.currentData() == "whisper.cpp"
+        current = self.stt.text().strip()
+        if whisper_mode and current in ("", "tcp://127.0.0.1:10300"):
+            self.stt.setText(WHISPER_CPP_DEFAULT_URL)
+        elif not whisper_mode and current == WHISPER_CPP_DEFAULT_URL:
+            self.stt.setText("tcp://127.0.0.1:10300")
+
+    def _fill_models(self, values: list[str]):
+        current = self.model.currentText()
+        self.model.clear()
+        self.model.addItems(values)
+        self.model.setCurrentText(current)
+
+    def _load_cloud_models(self):
+        models, fetched_at = cloud.cached_models()
+        if models:
+            self._fill_models(models)
+            age = max(0, int(time.time() - fetched_at))
+            self.discovery_status.setText(f"{len(models)} Modelle aus dem Zwischenspeicher ({age // 3600} h alt)")
+        if not models or time.time() - fetched_at > cloud.MODEL_CACHE_TTL_SECONDS:
+            self._discover("models")
+
+    def _test_api_key(self):
+        self.key_test.setEnabled(False)
+        self.discovery_status.setText("Prüfe API-Schlüssel …")
+        endpoint = self.llm_url.text().strip() or cloud.CLOUD_BASE_URL
+        api_key = self.api_key.text()
+
+        def run():
+            try:
+                cloud.verify_api_key(endpoint, api_key)
+                self.discovery.discovery.emit("key", [], "")
+            except Exception as error:
+                self.discovery.discovery.emit("key", [], str(error))
+
+        threading.Thread(target=run, daemon=True).start()
 
     def _general_hotkey_conflict(self, key: str) -> str | None:
         for name, other in self.special_hotkeys.items():
@@ -548,11 +656,15 @@ class SettingsDialog(QDialog):
         if kind == "voices":
             button = self.voice_refresh
             endpoint = self.tts.text().strip()
-            lookup = lambda: list_voices(endpoint)
+            if self.tts_provider.currentData() == "openai":
+                lookup = lambda: openai_tts.list_voices(endpoint)
+            else:
+                lookup = lambda: list_voices(endpoint)
         else:
             button = self.model_refresh
-            endpoint = self.llm_url.text().strip()
-            provider = self.provider.currentText()
+            provider = self.provider.currentData()
+            endpoint = self.llm_url.text().strip() or (
+                cloud.CLOUD_BASE_URL if provider == "ollama-cloud" else "")
             lookup = lambda: list_models(provider, endpoint)
         button.setEnabled(False)
         self.discovery_status.setText("Verbinde mit Dienst …")
@@ -566,21 +678,25 @@ class SettingsDialog(QDialog):
         threading.Thread(target=run, daemon=True).start()
 
     def _discovery_result(self, kind: str, values: list[str], error: str):
+        if kind == "key":
+            self.key_test.setEnabled(True)
+            self.discovery_status.setText("API-Schlüssel gültig" if not error
+                                          else f"API-Schlüssel ungültig: {error}")
+            return
         combo, button, label = (self.voice, self.voice_refresh, "Stimmen") if kind == "voices" else (self.model, self.model_refresh, "Modelle")
         button.setEnabled(True)
         if error:
             self.discovery_status.setText(f"{label} konnten nicht geladen werden: {error}")
             return
-        current = combo.currentText()
         if kind == "voices":
             self._available_voices = values
             self._refresh_voice_language_options()
             self._refresh_voice_options()
             self.discovery_status.setText(f"{len(values)} Stimmen gefunden" if values else "Keine Stimmen vom Dienst gemeldet")
             return
-        combo.clear()
-        combo.addItems(values)
-        combo.setCurrentText(current)
+        if self.provider.currentData() == "ollama-cloud":
+            cloud.store_models(values)
+        self._fill_models(values)
         self.discovery_status.setText(f"{len(values)} {label.lower()} gefunden" if values else f"Keine {label.lower()} vom Dienst gemeldet")
 
     def _refresh_voice_language_options(self):
@@ -599,7 +715,10 @@ class SettingsDialog(QDialog):
 
     def _refresh_voice_options(self):
         current = self.voice.currentText()
-        voices = filter_voices(self._available_voices, self.voice_language.currentData() or "")
+        if self.tts_provider.currentData() == "openai":
+            voices = list(self._available_voices)
+        else:
+            voices = filter_voices(self._available_voices, self.voice_language.currentData() or "")
         self.voice.blockSignals(True)
         self.voice.clear()
         self.voice.addItems(voices)
@@ -612,9 +731,15 @@ class SettingsDialog(QDialog):
 
     def apply(self, config: AppConfig) -> AppConfig:
         config.stt_url, config.tts_url, config.tts_voice = self.stt.text(), self.tts.text(), self.voice.currentText()
+        config.stt_provider = self.stt_provider.currentData() or "wyoming"
+        config.tts_provider = self.tts_provider.currentData() or "wyoming"
+        config.tts_language = self.tts_language.currentData() or ""
         config.stt_language = self.stt_language.currentData() or "auto"
         config.voice_language = self.voice_language.currentData() or ""
-        config.response_language = response_language_for_voice(config.tts_voice, config.response_language)
+        if config.tts_provider == "wyoming":
+            config.response_language = response_language_for_voice(config.tts_voice, config.response_language)
+        elif config.tts_language:
+            config.response_language = config.tts_language
         self._store_global_prompt()
         self._store_special_profile()
         config.special_prompts = dict(self.special_prompts)
@@ -629,7 +754,8 @@ class SettingsDialog(QDialog):
         config.global_prompt = self._global_prompt
         config.auto_speak = self.auto_speak.isChecked()
         config.tray_mode = self.tray_mode.isChecked()
-        config.llm_provider, config.llm_url, config.llm_model = self.provider.currentText(), self.llm_url.text(), self.model.currentText()
+        config.llm_provider, config.llm_url, config.llm_model = self.provider.currentData() or "ollama", self.llm_url.text(), self.model.currentText()
+        config.ollama_api_key = self.api_key.text().strip()
         config.ptt_key, config.sample_rate = self.key.value(), self.sample_rate.value()
         return config
 
@@ -1022,7 +1148,10 @@ class Overlay(QMainWindow):
             debug_wav = os.environ.get("SC_AI_COPILOT_DEBUG_WAV")
             if debug_wav:
                 save_wav(audio, debug_wav, self.config.sample_rate)
-            text = transcribe_sync(audio, self.config.stt_url, self.config.sample_rate, self.config.stt_language)
+            if self.config.stt_provider == "whisper.cpp":
+                text = whisper_cpp.transcribe(audio, self.config.stt_url, self.config.sample_rate, self.config.stt_language)
+            else:
+                text = transcribe_sync(audio, self.config.stt_url, self.config.sample_rate, self.config.stt_language)
             if cancel_event.is_set():
                 return
             if not text:
@@ -1036,7 +1165,7 @@ class Overlay(QMainWindow):
                 self.config.llm_model,
                 text,
                 system_prompt=build_system_prompt(
-                    piper_voice=self.config.tts_voice,
+                    piper_voice=self.config.tts_voice if self.config.tts_provider == "wyoming" else "",
                     special_prompt_name=profile_name,
                     special_prompt=self.config.special_prompts.get(profile_name, ""),
                     fallback_language=self.config.response_language,
@@ -1044,6 +1173,7 @@ class Overlay(QMainWindow):
                 ),
                 enabled_tools=self.config.enabled_tools.get(profile_name or "__global__", []),
                 input_actions=self.config.input_action_catalogs.get(profile_name or "__global__", ""),
+                api_key=self.config.ollama_api_key,
                 cancel_event=cancel_event,
             )
             if cancel_event.is_set():
@@ -1091,7 +1221,7 @@ class Overlay(QMainWindow):
 
     def _set_status(self, text: str):
         self.status.setText(text)
-        if text in ("Piper spricht …", "Bereit · PTT zum Sprechen") and AI_MARKER in self._last_text:
+        if text in (SPEAKING_STATUS, "Bereit · PTT zum Sprechen") and AI_MARKER in self._last_text:
             user_text, _marker, answer = self._last_text.partition(AI_MARKER)
             publish_status(f"{user_text}\n{AI_LABEL}{answer}")
         else:
@@ -1199,7 +1329,7 @@ class Overlay(QMainWindow):
         if not self._last_response:
             self._show_message("Noch keine Antwort zum Vorlesen", "")
             return
-        self._show_message("Piper spricht …", self._last_text)
+        self._show_message(SPEAKING_STATUS, self._last_text)
         self._start_speak(self._last_response)
 
     def _start_speak(self, text: str, cancel_event=None):
@@ -1208,7 +1338,7 @@ class Overlay(QMainWindow):
         self._stop_speaking()
         cancel_event = cancel_event or threading.Event()
         self._speech_cancel = cancel_event
-        self._set_status("Piper spricht …")
+        self._set_status(SPEAKING_STATUS)
         self._speech_jobs += 1
         self._hide_timer.stop()
         self._fade_animation.stop()
@@ -1221,7 +1351,11 @@ class Overlay(QMainWindow):
 
     def _speak(self, text: str, cancel_event: threading.Event):
         try:
-            audio, sample_rate = speak_sync(text, self.config.tts_url, self.config.tts_voice)
+            if self.config.tts_provider == "openai":
+                audio, sample_rate = openai_tts.speak_sync(
+                    text, self.config.tts_url, self.config.tts_voice, self.config.tts_language)
+            else:
+                audio, sample_rate = speak_sync(text, self.config.tts_url, self.config.tts_voice)
             if cancel_event.is_set():
                 return
             play_pcm(audio, sample_rate, cancel_event)
@@ -1229,7 +1363,7 @@ class Overlay(QMainWindow):
                 self.events.request_message.emit("Bereit · PTT zum Sprechen", "", cancel_event)
         except Exception as error:
             if not cancel_event.is_set():
-                self.events.request_message.emit(f"Piper-Fehler · {error}", "", cancel_event)
+                self.events.request_message.emit(f"Sprachausgabe-Fehler · {error}", "", cancel_event)
         finally:
             self.events.speech_finished.emit()
 

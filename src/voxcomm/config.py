@@ -13,8 +13,11 @@ DEFAULT_GLOBAL_PROMPT = "Erfinde keine Fakten, Ausgaben, Quellen oder Systemzust
 @dataclass
 class AppConfig:
     stt_url: str = "tcp://127.0.0.1:10300"
+    stt_provider: str = "wyoming"
     stt_language: str = "de"
     tts_url: str = "tcp://127.0.0.1:10200"
+    tts_provider: str = "wyoming"
+    tts_language: str = ""
     tts_voice: str = ""
     auto_speak: bool = False
     global_prompt: str = DEFAULT_GLOBAL_PROMPT
@@ -28,6 +31,7 @@ class AppConfig:
     llm_provider: str = "ollama"
     llm_url: str = "http://127.0.0.1:11434"
     llm_model: str = ""
+    ollama_api_key: str = ""
     ptt_key: str = "F9"
     sample_rate: int = 16000
     tray_mode: bool = False
@@ -83,4 +87,8 @@ def save_config(config: AppConfig, path: Path | None = None) -> None:
             rows.extend(["", f"[{table}]"])
             rows.extend(f"{json.dumps(name, ensure_ascii=True)} = {json.dumps(value, ensure_ascii=True)}"
                         for name, value in entries.items())
-    target.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    temporary = target.with_suffix(".tmp")
+    temporary.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    temporary.replace(target)
+    os.chmod(target, 0o600)

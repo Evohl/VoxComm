@@ -8,9 +8,11 @@ import httpx
 from threading import Event
 
 from voxcomm.action_catalog import match_action, parse_action_catalog
+from voxcomm.providers.cloud import CloudAuthError, list_cloud_models, web_search as cloud_web_search
 from voxcomm.providers.web import search_web
 
 
+CLOUD_DEFAULT_BASE = "https://ollama.com"
 MAX_TOOL_CALLS = 3
 FRESH_INFO_PATTERN = re.compile(
     r"\b(gestern|vorgestern|heute|morgen|übermorgen|aktuell(?:e|en|er|es)?|neueste[nrms]?|"
@@ -98,12 +100,17 @@ def list_models(provider: str, base_url: str) -> list[str]:
         response = httpx.get(endpoint, timeout=5)
         response.raise_for_status()
         models = [item.get("id") for item in response.json().get("data", [])]
+    elif provider == "ollama-cloud":
+        models = list_cloud_models(base_url or CLOUD_DEFAULT_BASE)
     else:
         raise ValueError(f"Unsupported LLM provider: {provider}")
     return sorted({str(model) for model in models if model}, key=str.casefold)
 
 
-def _request(provider: str, base_url: str, model: str, messages: list[dict], tools: list[dict] | None = None) -> dict:
+def _request(
+    provider: str, base_url: str, model: str, messages: list[dict], tools: list[dict] | None = None,
+    *, api_key: str = "",
+) -> dict:
     if provider == "ollama":
         payload = {"model": model, "messages": messages, "stream": False}
         if tools:
@@ -120,6 +127,16 @@ def _request(provider: str, base_url: str, model: str, messages: list[dict], too
         response = httpx.post(endpoint, json=payload, timeout=90)
         response.raise_for_status()
         return response.json()["choices"][0]["message"]
+    if provider == "ollama-cloud":
+        payload = {"model": model, "messages": messages, "stream": False}
+        if tools:
+            payload["tools"] = [{"type": "function", "function": tool} for tool in tools]
+        headers = {"Authorization": f"Bearer {api_key.strip()}"} if api_key.strip() else {}
+        response = httpx.post(f"{base_url}/api/chat", json=payload, headers=headers, timeout=120)
+        if response.status_code in (401, 403):
+            raise CloudAuthError("Ollama-Cloud-API-Schlüssel fehlt oder ist ungültig")
+        response.raise_for_status()
+        return response.json()["message"]
     raise ValueError(f"Unsupported LLM provider: {provider}")
 
 
@@ -143,6 +160,8 @@ def _execute_tool(
     call: dict,
     enabled_tools: set[str] | None = None,
     input_actions: list[dict[str, object]] | None = None,
+    *,
+    search=search_web,
 ) -> str:
     function = call.get("function", {})
     name = function.get("name", "")
@@ -155,7 +174,7 @@ def _execute_tool(
             result = {"error": "web_search requires a string query"}
         else:
             try:
-                result = {"results": search_web(arguments["query"])}
+                result = {"results": search(arguments["query"])}
             except Exception as error:
                 result = {"error": str(error)[:500]}
     elif name == "input_control":
@@ -215,8 +234,8 @@ def _dated_search_query(prompt: str, now: datetime) -> str:
     return query[:400]
 
 
-def _search_fresh_info(prompt: str, now: datetime) -> list[dict[str, str]]:
-    return search_web(_dated_search_query(prompt, now))
+def _search_fresh_info(prompt: str, now: datetime, search=search_web) -> list[dict[str, str]]:
+    return search(_dated_search_query(prompt, now))
 
 
 def chat(
@@ -227,6 +246,7 @@ def chat(
     system_prompt: str = "",
     enabled_tools: tuple[str, ...] | list[str] = (),
     input_actions: str = "",
+    api_key: str = "",
     cancel_event: Event | None = None,
 ) -> str:
     def cancelled() -> bool:
@@ -256,6 +276,12 @@ def chat(
     if not model.strip():
         return "Kein LLM-Modell konfiguriert. Bitte in den Einstellungen ein Modell eintragen."
     base_url = base_url.rstrip("/")
+    if provider == "ollama-cloud" and not base_url:
+        base_url = CLOUD_DEFAULT_BASE
+    if provider == "ollama-cloud":
+        search = lambda query: cloud_web_search(query, base_url, api_key)
+    else:
+        search = search_web
     messages = []
     if system_prompt.strip():
         messages.append({"role": "system", "content": system_prompt.strip()})
@@ -293,7 +319,7 @@ def chat(
     user_content = prompt
     if web_search_enabled and FRESH_INFO_PATTERN.search(prompt):
         try:
-            results = _search_fresh_info(prompt, local_now)
+            results = _search_fresh_info(prompt, local_now, search=search)
             if cancelled():
                 return ""
             search_fallback = _format_search_fallback(results)
@@ -312,8 +338,12 @@ def chat(
             return ""
         available_tools = [tool for tool in tool_definitions
                    if tool["name"] != "input_control" or not input_control_attempted]
-        message = _request(provider, base_url, model, messages,
-                   available_tools if executed < MAX_TOOL_CALLS and available_tools else None)
+        try:
+            message = _request(provider, base_url, model, messages,
+                       available_tools if executed < MAX_TOOL_CALLS and available_tools else None,
+                       api_key=api_key)
+        except CloudAuthError as error:
+            return str(error)
         if cancelled():
             return ""
         calls = _tool_calls(provider, message) if available_tools else []
@@ -321,7 +351,7 @@ def chat(
             answer = str(message.get("content") or "").strip()
             if web_search_enabled and not search_fallback and (not answer or LIVE_INFO_REFUSAL_PATTERN.search(answer)):
                 try:
-                    results = _search_fresh_info(prompt, local_now)
+                    results = _search_fresh_info(prompt, local_now, search=search)
                     if cancelled():
                         return ""
                     search_fallback = _format_search_fallback(results)
@@ -356,11 +386,11 @@ def chat(
                 else:
                     if function_name == "input_control":
                         input_control_attempted = True
-                    result = _execute_tool(call, enabled_tool_names, input_action_entries)
+                    result = _execute_tool(call, enabled_tool_names, input_action_entries, search=search)
                 executed += 1
             if cancelled():
                 return ""
-            if provider == "ollama":
+            if provider in ("ollama", "ollama-cloud"):
                 messages.append({"role": "tool", "content": result})
             else:
                 messages.append({

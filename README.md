@@ -1,6 +1,6 @@
 # VoxComm
 
-**VoxComm** is a Linux desktop voice copilot for games and other focused workflows. It combines push-to-talk recording, Wyoming-compatible Whisper speech recognition, a local Ollama or llama.cpp model, and optional Wyoming Piper speech output.
+**VoxComm** is a Linux desktop voice copilot for games and other focused workflows. It combines push-to-talk recording, speech recognition, a chat model, and optional speech output. Speech interfaces and the model provider are selectable independently: Wyoming Whisper or a whisper.cpp HTTP server for recognition, Wyoming Piper or any OpenAI-compatible `/v1/audio/speech` service for speech, and locally hosted Ollama or llama.cpp or Ollama Cloud for chat.
 
 > **Current scope:** VoxComm transcribes microphone audio, asks the configured model for a response, can search the public web when the active prompt profile allows it, and can speak that response. It does not inspect the screen, execute shell commands, or send keyboard or mouse actions.
 
@@ -8,8 +8,9 @@
 
 - Push-to-talk from an overlay button, a global keyboard or controller-button binding, or tray click-toggle.
 - Configurable general hotkey and a separate hotkey for each specialty prompt profile.
-- Wyoming-compatible Whisper STT and optional Piper TTS.
-- Ollama and llama.cpp chat endpoints.
+- Selectable STT: Wyoming Whisper (default) or a whisper.cpp server over HTTP.
+- Selectable TTS: Wyoming Piper (default) or any OpenAI-compatible TTS service (for example `qwentts.cpp`).
+- Selectable chat backend: local Ollama, Ollama Cloud with an API key, or llama.cpp.
 - A global prompt plus manually selected or hotkey-activated specialty prompts.
 - Optional web search, enabled independently for the global prompt or each specialty profile.
 - Optional automatic speech output and replay of the last answer.
@@ -45,7 +46,7 @@ Install a launcher and icon in the user's application menu with:
 voxcomm --install-launcher
 ```
 
-This writes `voxcomm.desktop` and the VoxComm icon beneath `${XDG_DATA_HOME:-~/.local/share}`. Remove those two files to uninstall the launcher. Settings remain under the historical path `${XDG_CONFIG_HOME:-~/.config}/sc-ai-copilot/config.toml` to preserve existing user configuration; the application command itself is `voxcomm` only.
+This writes `voxcomm.desktop` and the VoxComm icon beneath `${XDG_DATA_HOME:-~/.local/share}`. Remove those two files to uninstall the launcher. Settings are stored at `${XDG_CONFIG_HOME:-~/.config}/voxcomm/config.toml`; an existing `sc-ai-copilot/config.toml` is migrated on first start. The application command itself is `voxcomm` only.
 
 ### systemd user service
 
@@ -115,7 +116,7 @@ Check the Ollama HTTP service and model list (replace the URL if Ollama is hoste
 curl --fail --show-error http://127.0.0.1:11434/api/tags
 ```
 
-Wyoming uses TCP rather than HTTP. Test that its ports accept a connection (replace the host/ports with the values configured in VoxComm):
+Wyoming uses TCP rather than HTTP. If either interface is set to Wyoming, test that its ports accept a connection (replace the host/ports with the values configured in VoxComm):
 
 ```bash
 python - <<'PY'
@@ -129,15 +130,35 @@ for name, host, port in (("Whisper", "127.0.0.1", 10300), ("Piper", "127.0.0.1",
 PY
 ```
 
-A reachable port does not guarantee a healthy Wyoming service or a configured model/voice. In **Settings**, use **Load voices** and **Load models**, check the selected microphone, and perform a short push-to-talk test. Piper is optional if speech output is disabled. VoxComm does not save microphone audio by default.
+For HTTP speech services, check the same endpoints VoxComm uses:
+
+```bash
+curl --fail --show-error http://127.0.0.1:8081/v1/audio/transcriptions   # whisper.cpp (expects a POST; 200/405 proves it answers)
+curl --fail --show-error http://127.0.0.1:8097/v1/audio/voices           # OpenAI-compatible TTS
+curl --fail --show-error -H "Authorization: Bearer $OLLAMA_API_KEY" https://ollama.com/api/tags
+```
+
+A reachable port does not guarantee a healthy service or a configured model/voice. In **Settings**, use the refresh buttons next to **Stimme** and **Modell**, check the selected microphone, and perform a short push-to-talk test. Speech output is optional and can be left disabled. VoxComm does not save microphone audio by default.
 
 ## Current behavior
 
-Open **Settings** from the overlay or tray. Configure the Wyoming Whisper endpoint, STT language, LLM provider/model, and optional Piper endpoint/voice. Ollama model discovery uses `/api/tags`; llama.cpp discovery uses the OpenAI-compatible `/v1/models` endpoint, commonly `http://127.0.0.1:8080/v1`.
+Open **Settings** from the overlay or tray. Each section picks its own interface:
 
-Edit **Global** to change the always-active base prompt. Specialty profiles add task-specific context to Global. Selecting a profile and using the general hotkey uses that selected profile; a profile-specific hotkey always uses its bound profile. Profile selection is manual; process-based automatic profile selection is not implemented. The response language is derived from the selected Piper voice where possible. **Whisper recognition language** sets the language passed to each Wyoming `transcribe` request. **Read responses aloud** enables automatic Piper output.
+| Section | Interface | URL |
+| --- | --- | --- |
+| Spracherkennung | Wyoming (default) | `tcp://host:port`, e.g. `tcp://127.0.0.1:10300` |
+| Spracherkennung | whisper.cpp server | server base URL (`/inference` is appended) or the full `/v1/audio/transcriptions` path, e.g. `http://127.0.0.1:8081` |
+| Sprachausgabe | Wyoming Piper (default) | `tcp://host:port`, e.g. `tcp://127.0.0.1:10200` |
+| Sprachausgabe | OpenAI-compatible | base URL; voices are listed from `GET /v1/audio/voices` and speech is fetched from `POST /v1/audio/speech` |
+| Sprachmodell | Ollama (local) | `http://127.0.0.1:11434`, models from `/api/tags` |
+| Sprachmodell | Ollama Cloud | `https://ollama.com`, models from `/api/tags`, chat from `/api/chat` |
+| Sprachmodell | llama.cpp | OpenAI-compatible base URL, commonly `http://127.0.0.1:8080/v1`, models from `/v1/models` |
 
-The **Web search** permission is off by default and is configured independently for Global and each specialty profile. When enabled, the model may use DDGS to search external providers; the recognized user request and generated search query leave the machine. Search results are limited to five short snippets and are passed to the model as untrusted reference data. VoxComm does not automatically open result URLs. Time-sensitive queries (for example, weather tomorrow or today's headlines) are searched immediately using the local system date; if the model says it does not know, VoxComm searches once and asks it to answer from the results. If the model still cannot answer, VoxComm displays the results with their source links.
+An OpenAI-compatible TTS service such as `qwentts.cpp` commonly runs on `http://127.0.0.1:8097` and returns 24 kHz mono WAV. Voice names of such services (for example `data`) carry no language prefix, so the **TTS-Sprache** selector is sent to the service directly and also becomes the response language; for Wyoming/Piper the response language is derived from the selected Piper voice instead.
+
+Edit **Global** to change the always-active base prompt. Specialty profiles add task-specific context to Global. Selecting a profile and using the general hotkey uses that selected profile; a profile-specific hotkey always uses its bound profile. Profile selection is manual; process-based automatic profile selection is not implemented. **Erkennungssprache** sets the language passed to each recognition request (Wyoming `transcribe` or the whisper.cpp `language` field; *Automatisch* forwards `auto`). **Read responses aloud** enables automatic speech output.
+
+The **Web search** permission is off by default and is configured independently for Global and each specialty profile. When enabled and the provider is `ollama-cloud`, searches run through Ollama's `/api/web_search`; with any other provider they use DDGS. Either way the recognized user request and generated search query leave the machine, results are limited to five short snippets, and they reach the model as untrusted reference data — the boundary described under [Tool-use boundaries](#tool-use-boundaries) is unchanged. Search results are limited to five short snippets and are passed to the model as untrusted reference data. VoxComm does not automatically open result URLs. Time-sensitive queries (for example, weather tomorrow or today's headlines) are searched immediately using the local system date; if the model says it does not know, VoxComm searches once and asks it to answer from the results. If the model still cannot answer, VoxComm displays the results with their source links.
 
 The **VoxComm controller actions** permission is off by default and is configured independently for Global and every specialty profile. When enabled, the model can select only a named action from that profile's On/Off catalog; it cannot send keyboard input or invent button numbers. Each action sends one tap to the virtual VoxComm controller and reports which configured button was sent, without claiming that the game state changed. Catalog lines use `Action Name On/Off => keyword|alias => ButtonN => short reply`; every action must have a matching On and Off entry. For example:
 
@@ -175,8 +196,8 @@ Drag the overlay to move it; VoxComm saves and restores its coordinates. **Reset
 
 Arbitrary shell execution is not implemented. Tool availability and safety are enforced by the local dispatcher, not only by prompt instructions:
 
-- Web search is implemented through DDGS; it does not fetch result pages. Keep that boundary explicit unless a separate page-fetching feature is designed with host allowlists, redirect rules, timeouts, response-size limits, and protection for private/local network addresses.
-- Check whether the selected Ollama model declares the `tools` capability. A declared capability does not prove that the model reliably selects tools or returns valid arguments; end-to-end tool-call tests are still required.
+- Web search is implemented through DDGS, or through Ollama Cloud's `/api/web_search` when that provider is selected; neither fetches result pages. Keep that boundary explicit unless a separate page-fetching feature is designed with host allowlists, redirect rules, timeouts, response-size limits, and protection for private/local network addresses.
+- Check whether the selected model declares the `tools` capability. Ollama Cloud models report their capabilities in `/api/tags`, and a cloud model may also request tools VoxComm does not offer (for example its own `open_url`); such calls are answered with `Tool is not enabled`. A declared capability does not prove that the model reliably selects tools or returns valid arguments; end-to-end tool-call tests are still required.
 - Restrict shell access to named, application-defined operations. Never execute arbitrary model-generated shell strings. Destructive or privileged actions should require explicit user confirmation and run only as the unprivileged application user.
 - Input injection is separate from keyboard listening. Access to `/dev/input` does not grant write access to `/dev/uinput`; local keyboard input is opt-in per profile and is sent only to the currently focused application.
 - Each prompt profile enables its own subset of tools. Disabled tools are omitted from that profile's tool schema and rejected again if the model requests them.
@@ -184,7 +205,9 @@ Arbitrary shell execution is not implemented. Tool availability and safety are e
 
 ## Configuration and diagnostics
 
-Settings are stored as TOML at `${XDG_CONFIG_HOME:-~/.config}/sc-ai-copilot/config.toml`. The historical config directory is retained so existing VoxComm settings are not lost. Do not commit this file: it may contain private prompts, network addresses and device preferences.
+Settings are stored as TOML at `${XDG_CONFIG_HOME:-~/.config}/voxcomm/config.toml`. An existing `${XDG_CONFIG_HOME:-~/.config}/sc-ai-copilot/config.toml` is migrated there on first start. The file is written atomically with mode `0600` because it can contain `ollama_api_key`. Do not commit this file: it may contain private prompts, network addresses, an API key and device preferences.
+
+Ollama Cloud needs an API key from <https://ollama.com/settings/keys>, entered under **Sprachmodell → API-Schlüssel** (visible only when *Anbieter* is *Ollama Cloud*) and stored as `ollama_api_key`. **Schlüssel prüfen** verifies it against `https://ollama.com/api/web_search`. The model list endpoint `/api/tags` is public, but `/api/chat` and `/api/web_search` require `Authorization: Bearer <key>`. Cloud model discovery caches its result in `${XDG_CACHE_HOME:-~/.cache}/voxcomm/ollama-cloud-models.json` for 24 hours; the cache is reused when Settings opens and the refresh button always re-fetches. When this provider is active, prompts, transcriptions and search queries are sent to ollama.com and leave the machine.
 
 To save the latest microphone recording for debugging, set `SC_AI_COPILOT_DEBUG_WAV` when launching:
 
@@ -210,7 +233,11 @@ Project layout:
 - `src/voxcomm/ptt.py`: keyboard and controller-button push-to-talk.
 - `src/voxcomm/input_control.py`: validated local keyboard taps via Linux uinput.
 - `src/voxcomm/providers/wyoming.py`: Wyoming Whisper and Piper protocol.
-- `src/voxcomm/providers/llm.py`: Ollama and llama.cpp clients.
+- `src/voxcomm/providers/whisper_cpp.py`: whisper.cpp HTTP speech recognition.
+- `src/voxcomm/providers/openai_tts.py`: OpenAI-compatible speech output.
+- `src/voxcomm/providers/llm.py`: Ollama, Ollama Cloud and llama.cpp clients.
+- `src/voxcomm/providers/cloud.py`: Ollama Cloud API key, model discovery cache and web search.
+- `src/voxcomm/providers/web.py`: DDGS web search.
 - `src/voxcomm/prompts.py`: prompt assembly and response-language selection.
 - `src/voxcomm/config.py`: TOML configuration and persistence.
 - `tests/`: unit and offscreen Qt lifecycle tests.

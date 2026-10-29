@@ -307,5 +307,85 @@ class ModelDiscoveryTests(unittest.TestCase):
         get.assert_called_once_with("http://localhost:8080/v1/models", timeout=5)
 
 
+class OllamaCloudTests(unittest.TestCase):
+    @patch("voxcomm.providers.llm.list_cloud_models", return_value=["b", "a"])
+    def test_cloud_model_list_uses_cloud_client(self, listing):
+        self.assertEqual(list_models("ollama-cloud", "https://ollama.com"), ["a", "b"])
+        listing.assert_called_once_with("https://ollama.com")
+
+    @patch("voxcomm.providers.llm.httpx.post")
+    def test_cloud_chat_posts_bearer_key_without_streaming(self, post):
+        response = Mock(status_code=200)
+        response.json.return_value = {"message": {"content": "OK"}}
+
+        post.return_value = response
+
+        answer = chat("ollama-cloud", "https://ollama.com/", "gpt-oss:20b", "hi", api_key="k")
+
+        self.assertEqual(answer, "OK")
+        self.assertEqual(post.call_args.args[0], "https://ollama.com/api/chat")
+        self.assertIs(post.call_args.kwargs["json"]["stream"], False)
+        self.assertEqual(post.call_args.kwargs["headers"], {"Authorization": "Bearer k"})
+
+    @patch("voxcomm.providers.llm.httpx.post")
+    def test_rejected_cloud_key_becomes_plain_answer(self, post):
+        post.return_value = Mock(status_code=401)
+
+        answer = chat("ollama-cloud", "https://ollama.com", "gpt-oss:20b", "hi", api_key="bad")
+
+        self.assertIn("API-Schlüssel", answer)
+        self.assertIn("ungültig", answer)
+
+    def test_empty_cloud_url_falls_back_to_public_base(self):
+        with patch("voxcomm.providers.cloud.httpx.post") as post:
+            response = Mock(status_code=200)
+            response.json.return_value = {"message": {"content": "OK"}}
+            post.return_value = response
+
+            chat("ollama-cloud", "", "gpt-oss:20b", "hi", api_key="k")
+
+        self.assertEqual(post.call_args.args[0], "https://ollama.com/api/chat")
+
+    @patch("voxcomm.providers.llm.search_web")
+    @patch("voxcomm.providers.llm.cloud_web_search", return_value=[])
+    @patch("voxcomm.providers.llm.httpx.post")
+    def test_cloud_tool_search_uses_cloud_endpoint(self, chat_post, cloud_search, ddgs):
+        tool_response = Mock(status_code=200)
+        tool_response.json.return_value = {"message": {
+            "tool_calls": [{"function": {"name": "web_search", "arguments": {"query": "thema"}}}],
+        }}
+        final_response = Mock(status_code=200)
+        final_response.json.return_value = {"message": {"content": "Antwort"}}
+        chat_post.side_effect = [tool_response, final_response]
+
+        chat("ollama-cloud", "https://ollama.com", "gpt-oss:20b", "Suche etwas",
+             enabled_tools=["web_search"], api_key="k")
+
+        ddgs.assert_not_called()
+        cloud_search.assert_called_once_with("thema", "https://ollama.com", "k")
+
+    @patch("voxcomm.providers.llm.httpx.post")
+    def test_cloud_tool_message_omits_tool_call_id(self, post):
+        tool_response = Mock(status_code=200)
+        tool_response.json.return_value = {"message": {
+            "role": "assistant",
+            "tool_calls": [{"function": {"name": "web_search", "arguments": {"query": "topic"}}}],
+        }}
+        final_response = Mock(status_code=200)
+        final_response.json.return_value = {"message": {"content": "Fertig"}}
+        post.side_effect = [tool_response, final_response]
+
+        with patch("voxcomm.providers.llm.cloud_web_search", return_value=[
+            {"title": "T", "url": "https://example.com", "snippet": "S"},
+        ]):
+            answer = chat("ollama-cloud", "https://ollama.com", "gpt-oss:20b", "Suche",
+                          enabled_tools=["web_search"], api_key="k")
+
+        self.assertEqual(answer, "Fertig")
+        tool_message = post.call_args_list[1].kwargs["json"]["messages"][-1]
+        self.assertEqual(tool_message["role"], "tool")
+        self.assertNotIn("tool_call_id", tool_message)
+
+
 if __name__ == "__main__":
     unittest.main()

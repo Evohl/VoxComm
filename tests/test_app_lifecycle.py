@@ -1,6 +1,7 @@
 import os
 import signal
 import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -8,12 +9,12 @@ from PySide6.QtCore import QAbstractAnimation, QPoint, QPointF, QTimer, Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QFrame, QLabel, QMessageBox, QPushButton, QSystemTrayIcon, QToolButton, QWidget,
+    QApplication, QDialog, QFrame, QLabel, QLineEdit, QMessageBox, QPushButton, QSystemTrayIcon, QToolButton, QWidget,
 )
 
 from voxcomm.app import (
     COMPACT_WIDTH, FULL_WIDTH, HIDE_DELAY_MS,
-    TRANSCRIPT_MAX_HEIGHT, TYPE_INTERVAL_MS,
+    SPEAKING_STATUS, TRANSCRIPT_MAX_HEIGHT, TYPE_INTERVAL_MS,
     HotkeyField, Overlay,
     SettingsDialog,
     configure_application, prefer_x11_on_wayland, transcript_segments,
@@ -472,7 +473,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
             overlay.say.click()
 
             self.assertEqual(overlay.width(), FULL_WIDTH)
-            self.assertEqual(overlay.status.text(), "Piper spricht …")
+            self.assertEqual(overlay.status.text(), SPEAKING_STATUS)
             while overlay._type_timer.isActive():
                 overlay._type_next_character()
             self.assertEqual(overlay.transcript.toPlainText(), full_text)
@@ -837,6 +838,188 @@ class ApplicationLifecycleTests(unittest.TestCase):
                 "Landing Gear Off => gear up => Button4 => Gear retracted"
             ),
         })
+
+
+class ProviderSelectionTests(unittest.TestCase):
+    def test_cloud_provider_shows_api_key_row_and_swaps_url(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig(llm_provider="ollama-cloud", ollama_api_key="k",
+                                          llm_url="http://127.0.0.1:11434"))
+
+        self.assertTrue(dialog.llm_section.form.isRowVisible(dialog.key_row))
+        self.assertEqual(dialog.llm_url.text(), "https://ollama.com")
+        self.assertEqual(dialog.provider.currentData(), "ollama-cloud")
+        self.assertEqual(dialog.api_key.text(), "k")
+        self.assertEqual(dialog.api_key.echoMode(), QLineEdit.EchoMode.Password)
+
+        dialog.provider.setCurrentIndex(dialog.provider.findData("ollama"))
+
+        self.assertFalse(dialog.llm_section.form.isRowVisible(dialog.key_row))
+        self.assertEqual(dialog.llm_url.text(), "http://127.0.0.1:11434")
+
+    def test_cloud_models_are_loaded_from_cache_without_http(self):
+        app = QApplication.instance() or QApplication([])
+        with (
+            patch("voxcomm.app.cloud.cached_models", return_value=(["m1", "m2"], time.time())),
+            patch("voxcomm.app.cloud.list_cloud_models") as listing,
+        ):
+            dialog = SettingsDialog(AppConfig(llm_provider="ollama-cloud", llm_model="m2"))
+
+        listing.assert_not_called()
+        self.assertEqual([dialog.model.itemText(index) for index in range(dialog.model.count())], ["m1", "m2"])
+        self.assertEqual(dialog.model.currentText(), "m2")
+        self.assertIn("Zwischenspeicher", dialog.discovery_status.text())
+
+    def test_stale_cloud_cache_triggers_refresh(self):
+        app = QApplication.instance() or QApplication([])
+        stale = time.time() - 2 * 24 * 60 * 60
+        with (
+            patch("voxcomm.app.cloud.cached_models", return_value=(["old"], stale)),
+            patch("voxcomm.app.threading.Thread") as thread_class,
+        ):
+            SettingsDialog(AppConfig(llm_provider="ollama-cloud"))
+
+        thread_class.assert_called_once()
+
+    def test_apply_carries_new_provider_and_key_fields(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig(tts_voice="de_DE-thorsten-low"))
+        dialog.stt_provider.setCurrentIndex(dialog.stt_provider.findData("whisper.cpp"))
+        dialog.tts_provider.setCurrentIndex(dialog.tts_provider.findData("openai"))
+        dialog.tts_language.setCurrentIndex(dialog.tts_language.findData("English"))
+        dialog.provider.setCurrentIndex(dialog.provider.findData("ollama-cloud"))
+        dialog.api_key.setText(" secret ")
+        dialog.voice.setCurrentText("data")
+
+        updated = dialog.apply(AppConfig())
+
+        self.assertEqual(updated.stt_provider, "whisper.cpp")
+        self.assertEqual(updated.tts_provider, "openai")
+        self.assertEqual(updated.tts_language, "English")
+        self.assertEqual(updated.ollama_api_key, "secret")
+        self.assertEqual(updated.llm_provider, "ollama-cloud")
+        self.assertEqual(updated.response_language, "English")
+
+    def test_openai_interface_hides_voice_language_and_swaps_url(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig(tts_url="tcp://127.0.0.1:10200"))
+
+        dialog.tts_provider.setCurrentIndex(dialog.tts_provider.findData("openai"))
+
+        self.assertEqual(dialog.tts.text(), "http://127.0.0.1:8097")
+        self.assertFalse(dialog.tts_section.form.isRowVisible(dialog.voice_language))
+
+        dialog.tts_provider.setCurrentIndex(dialog.tts_provider.findData("wyoming"))
+
+        self.assertEqual(dialog.tts.text(), "tcp://127.0.0.1:10200")
+        self.assertTrue(dialog.tts_section.form.isRowVisible(dialog.voice_language))
+
+    def test_stt_interface_url_default_swap(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig())
+
+        dialog.stt_provider.setCurrentIndex(dialog.stt_provider.findData("whisper.cpp"))
+        self.assertEqual(dialog.stt.text(), "http://127.0.0.1:8081")
+
+        dialog.stt_provider.setCurrentIndex(dialog.stt_provider.findData("wyoming"))
+        self.assertEqual(dialog.stt.text(), "tcp://127.0.0.1:10300")
+
+    def test_custom_urls_are_never_overwritten(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig(stt_url="http://127.0.0.1:8081/v1/audio/transcriptions",
+                                          tts_url="http://127.0.0.1:9999/custom"))
+
+        dialog.stt_provider.setCurrentIndex(dialog.stt_provider.findData("whisper.cpp"))
+        dialog.tts_provider.setCurrentIndex(dialog.tts_provider.findData("openai"))
+
+        self.assertEqual(dialog.stt.text(), "http://127.0.0.1:8081/v1/audio/transcriptions")
+        self.assertEqual(dialog.tts.text(), "http://127.0.0.1:9999/custom")
+
+    def test_key_test_reports_valid_and_invalid_key(self):
+        app = QApplication.instance() or QApplication([])
+        with (
+            patch("voxcomm.app.cloud.cached_models", return_value=(["m"], time.time())),
+            patch("voxcomm.app.threading.Thread") as thread_class,
+        ):
+            dialog = SettingsDialog(AppConfig(llm_provider="ollama-cloud", ollama_api_key="k"))
+
+            dialog.key_test.click()
+            self.assertFalse(dialog.key_test.isEnabled())
+            self.assertIn("Prüfe", dialog.discovery_status.text())
+            thread_class.assert_called()
+            self.assertEqual(thread_class.call_args.kwargs["target"].__name__, "run")
+
+        dialog.discovery.discovery.emit("key", [], "")
+        self.assertTrue(dialog.key_test.isEnabled())
+        self.assertEqual(dialog.discovery_status.text(), "API-Schlüssel gültig")
+
+        dialog.discovery.discovery.emit("key", [], "401")
+        self.assertIn("API-Schlüssel ungültig", dialog.discovery_status.text())
+
+    def test_openai_voice_listing_is_not_language_filtered(self):
+        app = QApplication.instance() or QApplication([])
+        with patch("voxcomm.app.cloud.cached_models", return_value=([], 0.0)):
+            with patch("voxcomm.app.threading.Thread"):
+                dialog = SettingsDialog(AppConfig(tts_provider="openai", llm_provider="ollama"))
+        dialog._available_voices = ["data"]
+        dialog.voice_language.setCurrentIndex(dialog.voice_language.findData("de"))
+
+        dialog._refresh_voice_options()
+
+        self.assertEqual(dialog.voice.currentText(), "data")
+
+    def test_overlay_dispatches_to_local_backends(self):
+        app = QApplication.instance() or QApplication([])
+        config = AppConfig(stt_provider="whisper.cpp", tts_provider="openai",
+                           stt_url="http://127.0.0.1:8081", tts_url="http://127.0.0.1:8097",
+                           tts_voice="data", tts_language="German", sample_rate=16000)
+        with patch("voxcomm.app.load_config", return_value=config), patch("voxcomm.app.PttListener"):
+            overlay = Overlay()
+            with (
+                patch("voxcomm.app.record_until_released", return_value=b"\0" * 9600),
+                patch("voxcomm.app.whisper_cpp.transcribe", return_value="Hallo") as whisper,
+                patch("voxcomm.app.transcribe_sync") as wyoming,
+                patch("voxcomm.app.chat", return_value="Antwort"),
+            ):
+                overlay._capture(threading.Event())
+
+            whisper.assert_called_once_with(b"\0" * 9600, "http://127.0.0.1:8081", 16000, "de")
+            wyoming.assert_not_called()
+
+            with (
+                patch("voxcomm.app.openai_tts.speak_sync", return_value=(b"audio", 24000)) as openai_speak,
+                patch("voxcomm.app.speak_sync") as piper,
+                patch("voxcomm.app.play_pcm"),
+            ):
+                overlay._speak("Antwort", threading.Event())
+
+            openai_speak.assert_called_once_with("Antwort", "http://127.0.0.1:8097", "data", "German")
+            piper.assert_not_called()
+            overlay.listener.stop()
+            overlay.tray_icon.hide()
+            overlay.deleteLater()
+
+    def test_cloud_key_is_passed_to_chat_and_voice_is_not_a_language(self):
+        app = QApplication.instance() or QApplication([])
+        config = AppConfig(llm_provider="ollama-cloud", llm_url="https://ollama.com",
+                           ollama_api_key="secret", tts_provider="openai", tts_voice="data",
+                           response_language="Deutsch")
+        with patch("voxcomm.app.load_config", return_value=config), patch("voxcomm.app.PttListener"):
+            overlay = Overlay()
+            requests = []
+            with (
+                patch("voxcomm.app.record_until_released", return_value=b"\0" * 9600),
+                patch("voxcomm.app.transcribe_sync", return_value="Hallo"),
+                patch("voxcomm.app.chat", side_effect=lambda *a, **k: requests.append(k) or "Antwort"),
+            ):
+                overlay._capture(threading.Event())
+
+            self.assertEqual(requests[0]["api_key"], "secret")
+            self.assertIn("Deutsch", requests[0]["system_prompt"])
+            self.assertNotIn("DATA", requests[0]["system_prompt"])
+            overlay.listener.stop()
+            overlay.tray_icon.hide()
+            overlay.deleteLater()
 
 
 if __name__ == "__main__":

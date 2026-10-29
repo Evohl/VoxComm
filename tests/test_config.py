@@ -32,6 +32,23 @@ class ConfigTests(unittest.TestCase):
             save_config(original, path)
             self.assertEqual(load_config(path), original)
 
+    def test_cloud_key_and_interfaces_survive_round_trip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            original = AppConfig(
+                stt_provider="whisper.cpp",
+                tts_provider="openai",
+                tts_language="German",
+                llm_provider="ollama-cloud",
+                llm_url="https://ollama.com",
+                ollama_api_key="secret",
+            )
+
+            save_config(original, path)
+
+            self.assertEqual(load_config(path), original)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
     def test_missing_file_uses_defaults(self):
         with tempfile.TemporaryDirectory() as directory:
             self.assertEqual(load_config(Path(directory) / "missing.toml"), AppConfig())
