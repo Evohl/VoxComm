@@ -1,8 +1,9 @@
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
-from voxcomm.config import AppConfig, load_config, save_config
+from voxcomm.config import AppConfig, config_path, load_config, save_config
 
 
 class ConfigTests(unittest.TestCase):
@@ -44,6 +45,21 @@ class ConfigTests(unittest.TestCase):
 
             self.assertEqual(config.special_prompts, {"Spezialaufgabe": "Old specialty"})
             self.assertEqual(config.active_special_prompt, "Spezialaufgabe")
+
+    def test_config_uses_voxcomm_folder_and_copies_legacy_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            legacy = root / "sc-ai-copilot" / "config.toml"
+            legacy.parent.mkdir()
+            legacy.write_text('llm_model = "local-model"\n', encoding="utf-8")
+
+            with patch.dict("os.environ", {"XDG_CONFIG_HOME": directory}):
+                config = load_config()
+
+                self.assertEqual(config.llm_model, "local-model")
+                self.assertEqual(config_path(), root / "voxcomm" / "config.toml")
+                self.assertEqual(load_config(config_path()), config)
+                self.assertTrue(legacy.exists())
 
 
 if __name__ == "__main__":

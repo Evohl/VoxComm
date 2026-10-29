@@ -37,11 +37,22 @@ class AppConfig:
 
 def config_path() -> Path:
     base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return base / "voxcomm" / "config.toml"
+
+
+def _legacy_config_path() -> Path:
+    base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
     return base / "sc-ai-copilot" / "config.toml"
 
 
 def load_config(path: Path | None = None) -> AppConfig:
     target = path or config_path()
+    migrate_legacy = False
+    if path is None and not target.exists():
+        legacy = _legacy_config_path()
+        if legacy.exists():
+            target = legacy
+            migrate_legacy = True
     if not target.exists():
         return AppConfig()
     with target.open("rb") as config_file:
@@ -49,7 +60,10 @@ def load_config(path: Path | None = None) -> AppConfig:
     if "special_prompts" not in raw and raw.get("additional_prompt", "").strip():
         raw["special_prompts"] = {"Spezialaufgabe": raw["additional_prompt"]}
         raw["active_special_prompt"] = "Spezialaufgabe"
-    return AppConfig(**{key: value for key, value in raw.items() if key in AppConfig.__dataclass_fields__})
+    config = AppConfig(**{key: value for key, value in raw.items() if key in AppConfig.__dataclass_fields__})
+    if migrate_legacy:
+        save_config(config)
+    return config
 
 
 def save_config(config: AppConfig, path: Path | None = None) -> None:

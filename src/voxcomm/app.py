@@ -253,13 +253,14 @@ class SettingsDialog(QDialog):
         self.web_search = QCheckBox("Websuche erlauben")
         self.web_search.setToolTip("Suchanfragen werden über DDGS an externe Suchanbieter gesendet; Treffer werden nicht automatisch geöffnet.")
         self.web_search.setChecked("web_search" in self.enabled_tools.get(active_profile, []))
-        self.input_control = QCheckBox("Lokale Tastatureingaben erlauben")
-        self.input_control.setToolTip("Erlaubt diesem Profil einzelne Tastendrücke im Vordergrundfenster über /dev/uinput.")
+        self.input_control = QCheckBox("VoxComm-Controlleraktionen erlauben")
+        self.input_control.setToolTip("Erlaubt diesem Profil ausschließlich konfigurierte On/Off-Schalter über den virtuellen VoxComm-Controller.")
         self.input_control.setChecked("input_control" in self.enabled_tools.get(active_profile, []))
         self.input_action_catalog = QPlainTextEdit(self.input_action_catalogs.get(active_profile, ""))
         self.input_action_catalog.setPlaceholderText(
-            "Stichwort(e) => Taste(n) => kurze Rueckmeldung\n"
-            "flight ready|systeme bereit => RIGHTALT + R => Flight-Systems-Taste gesendet"
+            "Aktionsname On/Off => Stichwort(e) => ButtonN => kurze Rueckmeldung\n"
+            "Flight Systems On => flight ready|systeme ein => Button1 => Flight Systems eingeschaltet\n"
+            "Flight Systems Off => flight systems off|systeme aus => Button2 => Flight Systems ausgeschaltet"
         )
         self.input_action_catalog.setMaximumBlockCount(80)
         self.input_action_catalog.setMinimumHeight(105)
@@ -783,6 +784,7 @@ class Overlay(QMainWindow):
         self._request_cancellations_lock = threading.Lock()
         self._last_response = ""
         self._last_text = ""
+        self._gamepad_owned = False
         self._position_tracking_enabled = False
         self._position_save_timer = QTimer(self)
         self._position_save_timer.setSingleShot(True)
@@ -862,6 +864,37 @@ class Overlay(QMainWindow):
         extra_keys = {key: name for name, key in self.config.special_hotkeys.items()
                       if key and name in self.config.special_prompts}
         return PttListener(self.config.ptt_key, lambda kind, text: self.events.ptt.emit(kind, text), extra_keys)
+
+    def _start_gamepad(self):
+        try:
+            from voxcomm.gamepad import start, status
+        except ImportError as error:
+            self._set_status(f"Controller nicht verfügbar · {str(error)[:120]}")
+            return
+
+        try:
+            status()
+            return
+        except (OSError, RuntimeError):
+            pass
+        try:
+            self._gamepad_owned = start().startswith("VoxComm controller started")
+        except (OSError, RuntimeError) as error:
+            self._set_status(f"Controller nicht gestartet · {str(error)[:120]}")
+
+    def _stop_gamepad(self):
+        if not self._gamepad_owned:
+            return
+        self._gamepad_owned = False
+        try:
+            from voxcomm.gamepad import stop
+        except ImportError:
+            return
+
+        try:
+            stop()
+        except (OSError, RuntimeError):
+            pass
 
     def _apply_theme(self):
         accent, surface, text = system_accent(), system_surface(), system_text()
@@ -1201,7 +1234,7 @@ class Overlay(QMainWindow):
             self.events.speech_finished.emit()
 
     def _settings(self):
-        dialog = SettingsDialog(self.config, self)
+        dialog = SettingsDialog(self.config)
         if dialog.exec():
             self.listener.stop()
             self.config = dialog.apply(self.config)
@@ -1218,6 +1251,7 @@ class Overlay(QMainWindow):
             self._position_save_timer.stop()
             self._save_overlay_position()
         self.listener.stop()
+        self._stop_gamepad()
         self.tray_icon.hide()
         event.accept()
         app = QApplication.instance()
@@ -1278,6 +1312,7 @@ def main():
     apply_app_identity(app)
     restore_sigint_handler = configure_application(app)
     overlay = Overlay()
+    overlay._start_gamepad()
     try:
         exit_code = app.exec()
     except KeyboardInterrupt:

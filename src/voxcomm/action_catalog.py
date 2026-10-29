@@ -3,8 +3,6 @@ from __future__ import annotations
 import re
 import unicodedata
 
-from voxcomm.input_control import normalize_chord
-
 
 QUESTION_WORDS = {"wie", "warum", "was", "welche", "welcher", "welches", "erklaer", "erklaere", "erklaeren"}
 
@@ -17,19 +15,45 @@ def _normalize_phrase(value: str) -> str:
 
 def parse_action_catalog(catalog: str) -> list[dict[str, object]]:
     actions = []
+    names = set()
+    buttons = set()
+    states: dict[str, set[str]] = {}
     for line_number, raw_line in enumerate(catalog.splitlines(), start=1):
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
         parts = [part.strip() for part in line.split("=>")]
-        if len(parts) != 3 or not all(parts):
-            raise ValueError(f"line {line_number}: expected keywords => keys => reply")
-        keywords = [_normalize_phrase(item) for item in parts[0].split("|")]
+        if len(parts) != 4 or not all(parts):
+            raise ValueError(f"line {line_number}: expected action name => keywords => ButtonN => reply")
+        action_name = parts[0]
+        normalized_name = _normalize_phrase(action_name)
+        state_match = re.fullmatch(r"(.+)\s+(on|off)", action_name, flags=re.IGNORECASE)
+        if not state_match:
+            raise ValueError(f"line {line_number}: action name must end in On or Off")
+        if normalized_name in names:
+            raise ValueError(f"line {line_number}: duplicate action name")
+        names.add(normalized_name)
+        action_base = _normalize_phrase(state_match.group(1))
+        action_state = state_match.group(2).casefold()
+        states.setdefault(action_base, set()).add(action_state)
+
+        keywords = [_normalize_phrase(item) for item in parts[1].split("|")]
         if any(not keyword for keyword in keywords):
             raise ValueError(f"line {line_number}: keywords cannot be empty")
-        key_names = [key.strip() for key in parts[1].split("+")]
-        normalized_names, _codes = normalize_chord(key_names)
-        actions.append({"keywords": keywords, "keys": normalized_names, "reply": parts[2]})
+        from voxcomm.gamepad import normalize_button
+
+        _code, button = normalize_button(parts[2])
+        if button in buttons:
+            raise ValueError(f"line {line_number}: each action must have its own button")
+        buttons.add(button)
+        actions.append({
+            "name": action_name,
+            "keywords": keywords,
+            "button": button,
+            "reply": parts[3],
+        })
+    if any(action_states != {"on", "off"} for action_states in states.values()):
+        raise ValueError("each action must have a matching On and Off entry")
     return actions
 
 
@@ -50,7 +74,7 @@ def match_action(catalog: str, prompt: str) -> dict[str, object] | None:
         return None
     longest = max(length for length, _action in candidates)
     matches = [action for length, action in candidates if length == longest]
-    distinct = {tuple(action["keys"]) for action in matches}
+    distinct = {action["button"] for action in matches}
     if len(distinct) != 1:
-        raise ValueError("ambiguous action keywords map to different keys")
+        raise ValueError("ambiguous action keywords map to different buttons")
     return matches[0]

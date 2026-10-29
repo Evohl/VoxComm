@@ -106,7 +106,18 @@ Edit **Global** to change the always-active base prompt. Specialty profiles add 
 
 The **Web search** permission is off by default and is configured independently for Global and each specialty profile. When enabled, the model may use DDGS to search external providers; the recognized user request and generated search query leave the machine. Search results are limited to five short snippets and are passed to the model as untrusted reference data. VoxComm does not automatically open result URLs. Time-sensitive queries (for example, weather tomorrow or today's headlines) are searched immediately using the local system date; if the model says it does not know, VoxComm searches once and asks it to answer from the results. If the model still cannot answer, VoxComm displays the results with their source links.
 
-The **Local keyboard input** permission is off by default and is configured independently for Global and every specialty profile. When enabled, the model may request one unambiguous key tap or modifier chord, such as `X` or `Left Alt + N`; VoxComm sends it through Linux `/dev/uinput` to the current foreground application and returns the actual result to the model for a short confirmation. The application rejects unsupported keys and selected system shortcuts, and never holds or repeats a key. This is general-purpose keyboard input, not game detection: it can affect whichever application currently has focus. It requires the optional `evdev` input dependency and write access to `/dev/uinput`. Mouse buttons, wheel, and analog axes are not implemented.
+The **VoxComm controller actions** permission is off by default and is configured independently for Global and every specialty profile. When enabled, the model can select only a named action from that profile's On/Off catalog; it cannot send keyboard input or invent button numbers. Each action sends one tap to the virtual VoxComm controller and reports which configured button was sent, without claiming that the game state changed. Catalog lines use `Action Name On/Off => keyword|alias => ButtonN => short reply`; every action must have a matching On and Off entry. For example:
+
+```text
+Flight Systems On => flight ready|systeme ein => Button1 => Flight Systems eingeschaltet
+Flight Systems Off => flight systems off|systeme aus => Button2 => Flight Systems ausgeschaltet
+```
+
+Existing keyboard-style catalog entries must be replaced with this controller format. The feature requires the optional `evdev` input dependency, a running virtual controller, and write access to `/dev/uinput`.
+
+### Virtual button controller
+
+On Linux, install the optional input dependency with `pip install -e '.[input]'`, then start VoxComm's virtual controller with `voxcomm-gamepad start`. It appears as **VoxComm** and exposes `Button1` through `Button100` as button-only events, with no sticks or axes. Use `voxcomm-gamepad press Button37` to test a button, or `voxcomm-gamepad press Button37 --delay 2` to wait two seconds before pressing. `voxcomm-gamepad status` checks the device and `voxcomm-gamepad stop` removes it. The controller runs only while started and requires write permission for `/dev/uinput`. If needed, an administrator can grant access to the `input` group with a udev rule such as `KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"` in `/etc/udev/rules.d/99-uinput.rules`, then reload udev and reconnect the user session. Bind each On and Off command to its own numbered button in the game's controller settings, then add those button assignments to the active profile's action catalog.
 
 ### In-game status with MangoHud
 

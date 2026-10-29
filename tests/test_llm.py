@@ -100,54 +100,64 @@ class ModelDiscoveryTests(unittest.TestCase):
 
         self.assertNotIn("tools", post.call_args.kwargs["json"])
 
-    @patch("voxcomm.providers.llm.press_key_chord", return_value="Left Alt + N")
+    @patch("voxcomm.providers.llm.press_gamepad_button", return_value="Button12")
     @patch("voxcomm.providers.llm._request")
     def test_input_control_tool_executes_once_and_returns_result_for_confirmation(self, request, press):
         request.side_effect = [
-            {"tool_calls": [{"function": {"name": "input_control", "arguments": {"keys": ["LEFTALT", "N"]}}}]},
+            {"tool_calls": [{"function": {"name": "input_control", "arguments": {"action": "Landing Gear On"}}}]},
             {"content": "OK, Landing Gear toggled."},
         ]
 
         answer = chat("ollama", "http://localhost:11434", "model", "Toggle landing gear",
-                      enabled_tools=["input_control"])
+                      enabled_tools=["input_control"],
+                      input_actions=(
+                          "Landing Gear On => landing gear on => Button12 => Landing gear on\n"
+                          "Landing Gear Off => landing gear off => Button13 => Landing gear off"
+                      ))
 
         self.assertEqual(answer, "OK, Landing Gear toggled.")
-        press.assert_called_once_with(["LEFTALT", "N"])
+        press.assert_called_once_with("Button12")
         first_tools = request.call_args_list[0].args[4]
         self.assertEqual([tool["name"] for tool in first_tools], ["input_control"])
+        self.assertEqual(list(first_tools[0]["parameters"]["properties"]), ["action"])
+        self.assertEqual(first_tools[0]["parameters"]["properties"]["action"]["enum"], ["Landing Gear On", "Landing Gear Off"])
         self.assertIsNone(request.call_args_list[1].args[4])
         self.assertIn('"ok": true', request.call_args_list[1].args[3][-1]["content"])
         system_message = request.call_args_list[0].args[3][0]["content"]
-        self.assertIn("Do not answer with a tutorial", system_message)
-        self.assertIn("one short sentence only", system_message)
-        self.assertIn("not the application's resulting state", system_message)
+        self.assertIn("Never send keyboard input", system_message)
 
-    @patch("voxcomm.providers.llm.press_key_chord", return_value="Right Alt + R")
+    @patch("voxcomm.providers.llm.press_gamepad_button", return_value="Button1")
     @patch("voxcomm.providers.llm._request")
     def test_catalog_action_executes_without_model_round_trip(self, request, press):
         answer = chat(
             "ollama", "http://localhost:11434", "unused-model", "Flight ready bitte",
             enabled_tools=["input_control"],
-            input_actions="flight ready|systeme bereit => RIGHTALT + R => Flight-Systems-Taste gesendet",
+            input_actions=(
+                "Flight Systems On => flight ready|systeme ein => Button1 => Flight Systems eingeschaltet\n"
+                "Flight Systems Off => flight systems off|systeme aus => Button2 => Flight Systems ausgeschaltet"
+            ),
         )
 
-        self.assertEqual(answer, "Flight-Systems-Taste gesendet (Right Alt + R gesendet).")
-        press.assert_called_once_with(["RIGHTALT", "R"])
+        self.assertEqual(answer, "Flight Systems eingeschaltet (Button1 gesendet).")
+        press.assert_called_once_with("Button1")
         request.assert_not_called()
 
-    @patch("voxcomm.providers.llm.press_key_chord")
+    @patch("voxcomm.providers.llm.press_gamepad_button")
     @patch("voxcomm.providers.llm._request", return_value={"content": "Erklaerung"})
     def test_catalog_does_not_execute_questions(self, request, press):
         chat(
             "ollama", "http://localhost:11434", "model", "Wie schalte ich Flight ready?",
             enabled_tools=["input_control"],
-            input_actions="flight ready => RIGHTALT + R => Flight ready",
+            input_actions=(
+                "Flight Systems On => flight ready => Button1 => enabled\n"
+                "Flight Systems Off => flight systems off => Button2 => disabled"
+            ),
         )
 
         press.assert_not_called()
         request.assert_called_once()
 
-    @patch("voxcomm.providers.llm.press_key_chord")
+    @patch("voxcomm.providers.llm.press_gamepad_button")
     @patch("voxcomm.providers.llm._request", return_value={"tool_calls": [{
         "function": {"name": "input_control", "arguments": {"keys": ["X"]}},
     }]})
@@ -157,22 +167,46 @@ class ModelDiscoveryTests(unittest.TestCase):
         self.assertEqual(answer, "The model returned an empty response.")
         press.assert_not_called()
 
-    @patch("voxcomm.providers.llm.press_key_chord", return_value="X")
+    @patch("voxcomm.providers.llm.press_gamepad_button")
+    @patch("voxcomm.providers.llm._request", return_value={"tool_calls": [{
+        "function": {"name": "input_control", "arguments": {"keys": ["X"]}},
+    }]})
+    def test_legacy_keyboard_arguments_do_not_trigger_controller_input(self, request, press):
+        chat(
+            "ollama", "http://localhost:11434", "model", "Perform the requested action",
+            enabled_tools=["input_control"],
+            input_actions=(
+                "Power On => power on => Button5 => powered on\n"
+                "Power Off => power off => Button6 => powered off"
+            ),
+        )
+
+        press.assert_not_called()
+        self.assertEqual(request.call_count, 2)
+
+    @patch("voxcomm.providers.llm.press_gamepad_button", return_value="Button5")
     @patch("voxcomm.providers.llm._request")
     def test_multiple_input_calls_in_one_response_execute_only_the_first(self, request, press):
         request.side_effect = [
             {"tool_calls": [
-                {"function": {"name": "input_control", "arguments": {"keys": ["X"]}}},
-                {"function": {"name": "input_control", "arguments": {"keys": ["Y"]}}},
+                {"function": {"name": "input_control", "arguments": {"action": "Power On"}}},
+                {"function": {"name": "input_control", "arguments": {"action": "Power Off"}}},
             ]},
             {"content": "Done"},
         ]
 
-        answer = chat("ollama", "http://localhost:11434", "model", "Press X",
-                      enabled_tools=["input_control"])
+        answer = chat(
+            "ollama", "http://localhost:11434", "model", "Please do the system change",
+            enabled_tools=["input_control"],
+            input_actions=(
+                "Power On => turn power on => Button5 => powered on\n"
+                "Power Off => turn power off => Button6 => powered off"
+            ),
+        )
 
         self.assertEqual(answer, "Done")
-        press.assert_called_once_with(["X"])
+        press.assert_called_once_with("Button5")
+        self.assertEqual(request.call_count, 2)
 
     def test_yesterday_query_preserves_user_domain_and_resolves_relative_date(self):
         now = datetime(2026, 10, 29, 12, 0, tzinfo=timezone.utc)

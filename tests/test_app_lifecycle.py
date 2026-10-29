@@ -658,6 +658,61 @@ class ApplicationLifecycleTests(unittest.TestCase):
         for field in (dialog.stt, dialog.tts, dialog.llm_url, dialog.key, dialog.special_prompt):
             self.assertTrue(any(section.isAncestorOf(field) for section in sections))
 
+    def test_settings_dialog_is_not_parented_to_the_overlay(self):
+        app = QApplication.instance() or QApplication([])
+        with patch("voxcomm.app.PttListener"):
+            overlay = Overlay()
+            with patch("voxcomm.app.SettingsDialog") as dialog_class:
+                dialog_class.return_value.exec.return_value = 0
+                overlay._settings()
+
+            dialog_class.assert_called_once_with(overlay.config)
+            overlay.listener.stop()
+            overlay.tray_icon.hide()
+            overlay.deleteLater()
+
+    def test_app_starts_and_stops_only_its_own_gamepad_daemon(self):
+        from voxcomm.app import Overlay
+
+        overlay = Mock()
+        overlay._gamepad_owned = False
+        with patch("voxcomm.gamepad.status", side_effect=OSError("not running")):
+            with patch("voxcomm.gamepad.start", return_value="VoxComm controller started (100 buttons)") as start:
+                Overlay._start_gamepad(overlay)
+
+        self.assertTrue(overlay._gamepad_owned)
+        start.assert_called_once_with()
+
+        with patch("voxcomm.gamepad.stop") as stop:
+            Overlay._stop_gamepad(overlay)
+
+        self.assertFalse(overlay._gamepad_owned)
+        stop.assert_called_once_with()
+
+    def test_app_does_not_claim_or_stop_an_already_running_gamepad(self):
+        from voxcomm.app import Overlay
+
+        overlay = Mock()
+        overlay._gamepad_owned = False
+        with patch("voxcomm.gamepad.status", return_value="VoxComm: running, 100 buttons"):
+            with patch("voxcomm.gamepad.start") as start:
+                Overlay._start_gamepad(overlay)
+        start.assert_not_called()
+
+        with patch("voxcomm.gamepad.stop") as stop:
+            Overlay._stop_gamepad(overlay)
+        stop.assert_not_called()
+
+    def test_missing_optional_gamepad_dependency_does_not_abort_app_startup(self):
+        from voxcomm.app import Overlay
+
+        overlay = Mock()
+        with patch.dict("sys.modules", {"voxcomm.gamepad": None}):
+            Overlay._start_gamepad(overlay)
+
+        overlay._set_status.assert_called_once()
+        self.assertIn("Controller nicht verfügbar", overlay._set_status.call_args.args[0])
+
     def test_discovery_buttons_are_icon_only_with_tooltips(self):
         app = QApplication.instance() or QApplication([])
         dialog = SettingsDialog(AppConfig())
@@ -760,15 +815,27 @@ class ApplicationLifecycleTests(unittest.TestCase):
     def test_action_catalog_is_saved_per_profile(self):
         app = QApplication.instance() or QApplication([])
         dialog = SettingsDialog(AppConfig(special_prompts={"Star Citizen": "Ship context"}))
-        dialog.input_action_catalog.setPlainText("flight ready => RIGHTALT + R => Flight ready")
+        dialog.input_action_catalog.setPlainText(
+            "Flight Systems On => flight ready => Button1 => Flight Systems on\n"
+            "Flight Systems Off => flight systems off => Button2 => Flight Systems off"
+        )
         dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Star Citizen"))
-        dialog.input_action_catalog.setPlainText("gear down => N => Gear command sent")
+        dialog.input_action_catalog.setPlainText(
+            "Landing Gear On => gear down => Button3 => Gear extended\n"
+            "Landing Gear Off => gear up => Button4 => Gear retracted"
+        )
 
         updated = dialog.apply(AppConfig(special_prompts={"Star Citizen": "Ship context"}))
 
         self.assertEqual(updated.input_action_catalogs, {
-            "__global__": "flight ready => RIGHTALT + R => Flight ready",
-            "Star Citizen": "gear down => N => Gear command sent",
+            "__global__": (
+                "Flight Systems On => flight ready => Button1 => Flight Systems on\n"
+                "Flight Systems Off => flight systems off => Button2 => Flight Systems off"
+            ),
+            "Star Citizen": (
+                "Landing Gear On => gear down => Button3 => Gear extended\n"
+                "Landing Gear Off => gear up => Button4 => Gear retracted"
+            ),
         })
 
 
