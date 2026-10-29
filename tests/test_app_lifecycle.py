@@ -544,6 +544,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
         dialog = SettingsDialog(config)
 
         self.assertEqual(dialog.special_profile.itemText(0), "Global")
+        dialog.web_search.setChecked(True)
         dialog.special_prompt.setPlainText("Editable global instructions")
         dialog.auto_speak.setChecked(True)
         dialog.tray_mode.setChecked(True)
@@ -557,6 +558,26 @@ class ApplicationLifecycleTests(unittest.TestCase):
         self.assertTrue(updated.auto_speak)
         self.assertTrue(updated.tray_mode)
         self.assertEqual(updated.active_special_prompt, "Star Citizen")
+        self.assertEqual(updated.enabled_tools, {"__global__": ["web_search"]})
+
+    def test_web_search_permission_is_independent_per_prompt_profile(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig(special_prompts={"Star Citizen": "Ship context"}))
+
+        self.assertFalse(dialog.web_search.isChecked())
+        dialog.web_search.setChecked(True)
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Star Citizen"))
+        self.assertFalse(dialog.web_search.isChecked())
+        dialog.web_search.setChecked(True)
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("__global__"))
+        self.assertTrue(dialog.web_search.isChecked())
+
+        updated = dialog.apply(AppConfig(special_prompts={"Star Citizen": "Ship context"}))
+
+        self.assertEqual(updated.enabled_tools, {
+            "__global__": ["web_search"],
+            "Star Citizen": ["web_search"],
+        })
 
 
 if __name__ == "__main__":

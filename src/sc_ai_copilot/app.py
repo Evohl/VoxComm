@@ -230,6 +230,8 @@ class SettingsDialog(QDialog):
         self._update_response_language(self.voice.currentText())
         self.special_prompts = dict(config.special_prompts)
         self.special_hotkeys = {name: key for name, key in config.special_hotkeys.items() if name in self.special_prompts}
+        self.enabled_tools = {name: [tool for tool in tools if tool == "web_search"]
+                      for name, tools in config.enabled_tools.items()}
         self.profile_hotkey = HotkeyField("", clearable=True, validator=self._profile_hotkey_conflict)
         self.profile_hotkey.setToolTip("Mit diesem Hotkey wird zusätzlich zu Global dieses Profil verwendet")
         self.profile_hotkey.changed.connect(self._store_profile_hotkey)
@@ -242,6 +244,9 @@ class SettingsDialog(QDialog):
         self.special_profile.setCurrentIndex(max(self.special_profile.findData(active_profile), 0))
         self._active_profile_name = active_profile
         self.special_profile.currentIndexChanged.connect(self._select_special_profile)
+        self.web_search = QCheckBox("Websuche erlauben")
+        self.web_search.setToolTip("Suchanfragen werden über DDGS an externe Suchanbieter gesendet; Treffer werden nicht automatisch geöffnet.")
+        self.web_search.setChecked("web_search" in self.enabled_tools.get(active_profile, []))
         initial_prompt = config.global_prompt if active_profile == "__global__" else self.special_prompts.get(active_profile, "")
         self.special_prompt = QPlainTextEdit(initial_prompt)
         self.special_prompt.setPlaceholderText("Globaler Basis-Prompt" if active_profile == "__global__" else "Aufgabenwissen und Verhaltensregeln für dieses Profil")
@@ -319,7 +324,7 @@ class SettingsDialog(QDialog):
         ]))
         right.addWidget(self._section("Prompt", [
             ("Profil", self.special_profile), (None, profile_row), ("Profil-Hotkey", self.profile_hotkey),
-            (None, self.special_prompt),
+            (None, self.web_search), (None, self.special_prompt),
         ]), 1)
         columns = QHBoxLayout()
         columns.setSpacing(14)
@@ -410,11 +415,19 @@ class SettingsDialog(QDialog):
         super().done(result)
 
     def _store_special_profile(self):
+        self._store_enabled_tools()
         if self._active_profile_name == "__global__":
             self._global_prompt = self.special_prompt.toPlainText().strip()
             return
         if self._active_profile_name:
             self.special_prompts[self._active_profile_name] = self.special_prompt.toPlainText().strip()
+
+    def _store_enabled_tools(self):
+        if self._active_profile_name in self.special_prompts or self._active_profile_name == "__global__":
+            if self.web_search.isChecked():
+                self.enabled_tools[self._active_profile_name] = ["web_search"]
+            else:
+                self.enabled_tools.pop(self._active_profile_name, None)
 
     def _select_special_profile(self):
         self._store_special_profile()
@@ -423,6 +436,7 @@ class SettingsDialog(QDialog):
             prompt = self._global_prompt
         else:
             prompt = self.special_prompts.get(self._active_profile_name, "")
+        self.web_search.setChecked("web_search" in self.enabled_tools.get(self._active_profile_name, []))
         self.special_prompt.setPlainText(prompt)
         self.special_prompt.setPlaceholderText("Globaler Basis-Prompt" if self._active_profile_name == "__global__" else "Aufgabenwissen und Verhaltensregeln für dieses Profil")
         self._update_profile_controls()
@@ -448,6 +462,7 @@ class SettingsDialog(QDialog):
             prompt = self._global_prompt
         else:
             prompt = self.special_prompts.get(self._active_profile_name, "")
+        self.web_search.setChecked("web_search" in self.enabled_tools.get(self._active_profile_name, []))
         self.special_prompt.setPlainText(prompt)
         self.special_prompt.setPlaceholderText("Globaler Basis-Prompt" if self._active_profile_name == "__global__" else "Aufgabenwissen und Verhaltensregeln für dieses Profil")
         self._update_profile_controls()
@@ -477,6 +492,8 @@ class SettingsDialog(QDialog):
             return
         self._store_special_profile()
         self.special_prompts[name] = self.special_prompts.pop(current)
+        if current in self.enabled_tools:
+            self.enabled_tools[name] = self.enabled_tools.pop(current)
         if current in self.special_hotkeys:
             self.special_hotkeys[name] = self.special_hotkeys.pop(current)
         self._refresh_special_profiles(name)
@@ -490,6 +507,7 @@ class SettingsDialog(QDialog):
             return
         self._store_special_profile()
         self.special_prompts.pop(current, None)
+        self.enabled_tools.pop(current, None)
         self.special_hotkeys.pop(current, None)
         self._refresh_special_profiles("")
 
@@ -568,6 +586,9 @@ class SettingsDialog(QDialog):
         self._store_special_profile()
         config.special_prompts = dict(self.special_prompts)
         config.special_hotkeys = {name: key for name, key in self.special_hotkeys.items() if key and name in self.special_prompts}
+        allowed_tool_profiles = {"__global__", *self.special_prompts}
+        config.enabled_tools = {name: ["web_search"] for name, tools in self.enabled_tools.items()
+                    if name in allowed_tool_profiles and "web_search" in tools}
         config.active_special_prompt = self.special_profile.currentData() if self.special_profile.currentData() != "__global__" else ""
         config.global_prompt = self._global_prompt
         config.auto_speak = self.auto_speak.isChecked()
@@ -905,6 +926,7 @@ class Overlay(QMainWindow):
                     fallback_language=self.config.response_language,
                     global_prompt=self.config.global_prompt,
                 ),
+                enabled_tools=self.config.enabled_tools.get(profile_name or "__global__", []),
             )
             self.events.message.emit("Bereit · Antwort lokal erzeugt", f"{USER_PREFIX}{text}{AI_MARKER}{answer}")
             if self.config.auto_speak:

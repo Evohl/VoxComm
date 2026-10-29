@@ -2,7 +2,7 @@
 
 **VoxComm** is a Linux desktop voice copilot for games and other focused workflows. It combines push-to-talk recording, Wyoming-compatible Whisper speech recognition, a local Ollama or llama.cpp model, and optional Wyoming Piper speech output.
 
-> **Current scope:** VoxComm transcribes microphone audio, asks the configured model for a response, and can speak that response. It does not inspect the screen, execute shell commands, browse the web, or send keyboard or mouse actions. Model tool calling is not implemented in the current release. The tool-use preflight below records requirements and security decisions for a future implementation; it is not an available feature.
+> **Current scope:** VoxComm transcribes microphone audio, asks the configured model for a response, can search the public web when the active prompt profile allows it, and can speak that response. It does not inspect the screen, execute shell commands, or send keyboard or mouse actions.
 
 ## Features
 
@@ -11,6 +11,7 @@
 - Wyoming-compatible Whisper STT and optional Piper TTS.
 - Ollama and llama.cpp chat endpoints.
 - A global prompt plus manually selected or hotkey-activated specialty prompts.
+- Optional web search, enabled independently for the global prompt or each specialty profile.
 - Optional automatic speech output and replay of the last answer.
 - Tray mode, draggable overlay, remembered position, and a reset control.
 
@@ -104,6 +105,8 @@ Open **Settings** from the overlay or tray. Configure the Wyoming Whisper endpoi
 
 Edit **Global** to change the always-active base prompt. Specialty profiles add task-specific context to Global. Selecting a profile and using the general hotkey uses that selected profile; a profile-specific hotkey always uses its bound profile. Profile selection is manual; process-based automatic profile selection is not implemented. The response language is derived from the selected Piper voice where possible. **Whisper recognition language** sets the language passed to each Wyoming `transcribe` request. **Read responses aloud** enables automatic Piper output.
 
+The **Web search** permission is off by default and is configured independently for Global and each specialty profile. When enabled, the model may use DDGS to search external providers; the recognized user request and generated search query leave the machine. Search results are limited to five short snippets and are passed to the model as untrusted reference data. VoxComm does not automatically open result URLs. Time-sensitive queries (for example, weather tomorrow or today's headlines) are searched immediately using the local system date; if the model says it does not know, VoxComm searches once and asks it to answer from the results. If the model still cannot answer, VoxComm displays the results with their source links.
+
 The general push-to-talk key defaults to F9. Click its field and press a key to capture it; Esc cancels. Each specialty profile may have its own **Profile hotkey**. Holding a hotkey records until release. Linux keyboards are read via `evdev`, so the key press is observed globally and is not blocked; it also reaches the foreground application. A key can only be assigned once. If keyboard access is unavailable, the application reports the issue; pure X11 sessions can fall back to `pynput`.
 
 In **Tray mode**, clicking the tray icon starts recording and clicking again sends it. The flat tray menu contains recording, settings, replay and exit. Standard Linux tray APIs do not expose reliable press/release events, so the tray uses click-to-toggle rather than hold-to-record. If no system tray is available, VoxComm falls back to overlay mode. The text overlay still appears for status and responses without its buttons, then hides again after the text/audio finishes.
@@ -112,10 +115,10 @@ Drag the overlay to move it; VoxComm saves and restores its coordinates. **Reset
 
 ## Future tool-use preflight
 
-The proposed web, shell and keyboard-output tools are not currently implemented. Before adding them, the application should:
+Shell and keyboard-output tools are not currently implemented. Before adding them, the application should:
 
+- Web search is implemented through DDGS; it does not fetch result pages. Keep that boundary explicit unless a separate page-fetching feature is designed with host allowlists, redirect rules, timeouts, response-size limits, and protection for private/local network addresses.
 - Check whether the selected Ollama model declares the `tools` capability. A declared capability does not prove that the model reliably selects tools or returns valid arguments; end-to-end tool-call tests are still required.
-- Report web availability without making requests with side effects. A web tool needs explicit host allowlists, redirect rules, timeouts, response-size limits, and a policy for private/local network addresses.
 - Restrict shell access to named, application-defined operations. Never execute arbitrary model-generated shell strings. Destructive or privileged actions should require explicit user confirmation and run only as the unprivileged application user.
 - Treat keyboard output as a separate permission from keyboard listening. Under Wayland it needs an input-injection backend such as `/dev/uinput`; read access to `/dev/input` does not grant output permission. Keyboard actions should be opt-in, visible, and scoped to the intended foreground target.
 - Let each prompt profile explicitly enable a subset of tools. Enforce those permissions in the application dispatcher, not only in prompt instructions. Disabled tools must be omitted from that profile's tool schema and rejected again if the model requests them.

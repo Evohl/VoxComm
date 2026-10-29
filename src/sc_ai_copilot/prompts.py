@@ -40,7 +40,7 @@ def build_system_prompt(
     response_language = response_language_for_voice(piper_voice, fallback_language)
     sections = [
         global_prompt.strip(),
-        f"Lokale aktuelle Zeit: {timestamp}.",
+        f"Lokale aktuelle Zeit: {timestamp}. Dieser Zeitstempel ist maßgeblich; leite relative Zeitangaben wie gestern, heute und morgen daraus ab.",
         f"Antworte immer in der Sprache {response_language}; diese Sprache ist aus der ausgewählten Piper-Stimme abgeleitet.",
     ]
     extra = special_prompt.strip()

@@ -22,6 +22,7 @@ class AppConfig:
     response_language: str = "Deutsch"
     special_prompts: dict[str, str] = field(default_factory=dict)
     special_hotkeys: dict[str, str] = field(default_factory=dict)
+    enabled_tools: dict[str, list[str]] = field(default_factory=dict)
     active_special_prompt: str = ""
     llm_provider: str = "ollama"
     llm_url: str = "http://127.0.0.1:11434"
@@ -58,10 +59,11 @@ def save_config(config: AppConfig, path: Path | None = None) -> None:
     values = asdict(config)
     prompts = values.pop("special_prompts")
     hotkeys = values.pop("special_hotkeys")
+    enabled_tools = values.pop("enabled_tools")
     rows = [f"{key} = {json.dumps(value, ensure_ascii=True)}" if isinstance(value, str)
             else f"{key} = {str(value).lower() if isinstance(value, bool) else value}"
             for key, value in values.items() if value is not None]
-    for table, entries in (("special_prompts", prompts), ("special_hotkeys", hotkeys)):
+    for table, entries in (("special_prompts", prompts), ("special_hotkeys", hotkeys), ("enabled_tools", enabled_tools)):
         if entries:
             rows.extend(["", f"[{table}]"])
             rows.extend(f"{json.dumps(name, ensure_ascii=True)} = {json.dumps(value, ensure_ascii=True)}"
