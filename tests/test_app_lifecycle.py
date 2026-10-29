@@ -80,6 +80,28 @@ class ApplicationLifecycleTests(unittest.TestCase):
                 overlay.listener.stop()
                 overlay.deleteLater()
 
+    def test_new_request_ignores_late_messages_from_previous_request(self):
+        app = QApplication.instance() or QApplication([])
+        with patch("voxcomm.app.PttListener"), patch("voxcomm.app.threading.Thread") as thread_class:
+            overlay = Overlay()
+            previous_request = threading.Event()
+            with overlay._request_cancellations_lock:
+                overlay._request_cancellations.add(previous_request)
+
+            overlay._ptt_event("pressed", "")
+            new_request = thread_class.call_args.kwargs["args"][2]
+
+            self.assertTrue(previous_request.is_set())
+            self.assertFalse(new_request.is_set())
+            overlay._show_request_message("Veraltete Antwort", "Du: Wie macht die Kuh?\n", previous_request)
+            self.assertIn("Aufnahme läuft", overlay.status.text())
+
+            overlay._show_request_message("Denke nach …", "Du: Wetter morgen?\n", new_request)
+            self.assertEqual(overlay._typing_text, "Du: Wetter morgen?\n")
+            overlay.listener.stop()
+            overlay.tray_icon.hide()
+            overlay.deleteLater()
+
     def test_tray_click_toggles_recording_and_menu_contains_requested_actions(self):
         app = QApplication.instance() or QApplication([])
         with patch("voxcomm.app.PttListener"), patch("voxcomm.app.threading.Thread") as thread_class:

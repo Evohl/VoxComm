@@ -1079,6 +1079,9 @@ class Overlay(QMainWindow):
             self._schedule_hide()
         elif kind == "pressed":
             self._stop_speaking()
+            with self._request_cancellations_lock:
+                for cancel_event in self._request_cancellations:
+                    cancel_event.set()
             self._ptt_pressed_at = time.monotonic()
             self._hide_timer.stop()
             self._hide_after_typing = False
