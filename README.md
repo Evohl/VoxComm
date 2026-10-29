@@ -1,0 +1,154 @@
+# VoxComm
+
+**VoxComm** is a Linux desktop voice copilot for games and other focused workflows. It combines push-to-talk recording, Wyoming-compatible Whisper speech recognition, a local Ollama or llama.cpp model, and optional Wyoming Piper speech output.
+
+> **Current scope:** VoxComm transcribes microphone audio, asks the configured model for a response, and can speak that response. It does not inspect the screen, execute shell commands, browse the web, or send keyboard or mouse actions. Model tool calling is not implemented in the current release. The tool-use preflight below records requirements and security decisions for a future implementation; it is not an available feature.
+
+## Features
+
+- Push-to-talk from an overlay button, global keyboard hotkey, joystick, or tray click-toggle.
+- Configurable general hotkey and a separate hotkey for each specialty prompt profile.
+- Wyoming-compatible Whisper STT and optional Piper TTS.
+- Ollama and llama.cpp chat endpoints.
+- A global prompt plus manually selected or hotkey-activated specialty prompts.
+- Optional automatic speech output and replay of the last answer.
+- Tray mode, draggable overlay, remembered position, and a reset control.
+
+## Requirements
+
+- Linux desktop session with a Qt-supported graphics platform.
+- Python 3.11 or newer. Python 3.14 is currently used in the development environment.
+- PortAudio runtime/development library for microphone capture and playback (`portaudio` / `portaudio-2.0` pkg-config entry).
+- Qt 6 runtime and a working Qt platform plugin. On Wayland, VoxComm prefers XWayland (`xcb`) when `DISPLAY` is available because native Wayland does not allow clients to position their own windows or reliably request always-on-top. An explicitly set `QT_QPA_PLATFORM` is respected.
+- A working microphone and audio output visible to PortAudio.
+- Network access to the configured STT, LLM and, if enabled, TTS endpoints.
+- Optional global keyboard input: `evdev` and read access to keyboard devices under `/dev/input`. Some distributions require membership in the `input` group; use the least-privileged per-session device access your system supports.
+- Optional joystick input: pygame support and access to the selected joystick device.
+
+## Installation
+
+Install system packages for Python development, PortAudio and Qt/X11 compatibility using your distribution's package manager. Package names vary; common names include `python3`, `python3-venv`, `python3-dev`, `portaudio`, `portaudio-devel` or `portaudio19-dev`, and XWayland/XCB runtime libraries.
+
+From a checkout:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e '.[input]'
+voxcomm
+```
+
+Install a launcher and icon in the user's application menu with:
+
+```bash
+voxcomm --install-launcher
+```
+
+This writes `voxcomm.desktop` and the VoxComm icon beneath `${XDG_DATA_HOME:-~/.local/share}`. Remove those two files to uninstall the launcher. Settings remain under the historical path `${XDG_CONFIG_HOME:-~/.config}/sc-ai-copilot/config.toml` to preserve existing user configuration; the application command itself is `voxcomm` only.
+
+## First-run preflight
+
+Run these local checks before troubleshooting. They inspect system state but do not change permissions or start services:
+
+```bash
+python3 --version
+pkg-config --modversion portaudio-2.0
+python -c 'import PySide6, sounddevice, evdev, pygame; print("Python dependencies: OK")'
+printf 'session=%s display=%s wayland=%s\n' "$XDG_SESSION_TYPE" "$DISPLAY" "$WAYLAND_DISPLAY"
+```
+
+Check that at least one keyboard event device is readable and advertises keyboard keys:
+
+```bash
+python - <<'PY'
+from evdev import InputDevice, ecodes, list_devices
+keyboards = []
+for path in list_devices():
+    try:
+        device = InputDevice(path)
+        if ecodes.KEY_A in device.capabilities().get(ecodes.EV_KEY, []):
+            keyboards.append((path, device.name))
+        device.close()
+    except OSError:
+        pass
+print("Readable keyboards:", keyboards or "none")
+PY
+```
+
+Check the Ollama HTTP service and model list (replace the URL if Ollama is hosted elsewhere):
+
+```bash
+curl --fail --show-error http://127.0.0.1:11434/api/tags
+```
+
+Wyoming uses TCP rather than HTTP. Test that its ports accept a connection (replace the host/ports with the values configured in VoxComm):
+
+```bash
+python - <<'PY'
+import socket
+for name, host, port in (("Whisper", "127.0.0.1", 10300), ("Piper", "127.0.0.1", 10200)):
+    try:
+        with socket.create_connection((host, port), timeout=3):
+            print(f"{name}: reachable")
+    except OSError as error:
+        print(f"{name}: unavailable ({error})")
+PY
+```
+
+A reachable port does not guarantee a healthy Wyoming service or a configured model/voice. In **Settings**, use **Load voices** and **Load models**, check the selected microphone, and perform a short push-to-talk test. Piper is optional if speech output is disabled. VoxComm does not save microphone audio by default.
+
+## Current behavior
+
+Open **Settings** from the overlay or tray. Configure the Wyoming Whisper endpoint, STT language, LLM provider/model, and optional Piper endpoint/voice. Ollama model discovery uses `/api/tags`; llama.cpp discovery uses the OpenAI-compatible `/v1/models` endpoint, commonly `http://127.0.0.1:8080/v1`.
+
+Edit **Global** to change the always-active base prompt. Specialty profiles add task-specific context to Global. Selecting a profile and using the general hotkey uses that selected profile; a profile-specific hotkey always uses its bound profile. Profile selection is manual; process-based automatic profile selection is not implemented. The response language is derived from the selected Piper voice where possible. **Whisper recognition language** sets the language passed to each Wyoming `transcribe` request. **Read responses aloud** enables automatic Piper output.
+
+The general push-to-talk key defaults to F9. Click its field and press a key to capture it; Esc cancels. Each specialty profile may have its own **Profile hotkey**. Holding a hotkey records until release. Linux keyboards are read via `evdev`, so the key press is observed globally and is not blocked; it also reaches the foreground application. A key can only be assigned once. If keyboard access is unavailable, the application reports the issue; pure X11 sessions can fall back to `pynput`.
+
+In **Tray mode**, clicking the tray icon starts recording and clicking again sends it. The flat tray menu contains recording, settings, replay and exit. Standard Linux tray APIs do not expose reliable press/release events, so the tray uses click-to-toggle rather than hold-to-record. If no system tray is available, VoxComm falls back to overlay mode. The text overlay still appears for status and responses without its buttons, then hides again after the text/audio finishes.
+
+Drag the overlay to move it; VoxComm saves and restores its coordinates. **Reset overlay position** returns it to the top center of the primary display if it has moved off-screen. Under Wayland/XWayland, placement and stacking can still depend on the compositor and game display mode. Joystick events are requested in the background so they can be received while a game has focus; set the joystick index to `-1` to disable joystick polling.
+
+## Future tool-use preflight
+
+The proposed web, shell and keyboard-output tools are not currently implemented. Before adding them, the application should:
+
+- Check whether the selected Ollama model declares the `tools` capability. A declared capability does not prove that the model reliably selects tools or returns valid arguments; end-to-end tool-call tests are still required.
+- Report web availability without making requests with side effects. A web tool needs explicit host allowlists, redirect rules, timeouts, response-size limits, and a policy for private/local network addresses.
+- Restrict shell access to named, application-defined operations. Never execute arbitrary model-generated shell strings. Destructive or privileged actions should require explicit user confirmation and run only as the unprivileged application user.
+- Treat keyboard output as a separate permission from keyboard listening. Under Wayland it needs an input-injection backend such as `/dev/uinput`; read access to `/dev/input` does not grant output permission. Keyboard actions should be opt-in, visible, and scoped to the intended foreground target.
+- Let each prompt profile explicitly enable a subset of tools. Enforce those permissions in the application dispatcher, not only in prompt instructions. Disabled tools must be omitted from that profile's tool schema and rejected again if the model requests them.
+- Make preflight results informational (`available`, `unavailable`, or `not configured`). Preflight must not grant permissions, run shell commands, send keystrokes, or access websites as a side effect.
+
+## Configuration and diagnostics
+
+Settings are stored as TOML at `${XDG_CONFIG_HOME:-~/.config}/sc-ai-copilot/config.toml`. The historical config directory is retained so existing VoxComm settings are not lost. Do not commit this file: it may contain private prompts, network addresses and device preferences.
+
+To save the latest microphone recording for debugging, set `SC_AI_COPILOT_DEBUG_WAV` when launching:
+
+```bash
+SC_AI_COPILOT_DEBUG_WAV=/tmp/voxcomm-last.wav voxcomm
+```
+
+Unset the variable to return to the default behavior, which does not save microphone audio.
+
+## Development
+
+```bash
+python -m unittest discover -s tests -v
+python -m compileall -q src tests
+```
+
+The offscreen Qt test platform can print harmless platform-plugin warnings. A native Qt teardown crash after tests report `OK` has been observed in some environments; distinguish it from assertion failures using the unittest output.
+
+Project layout:
+
+- `src/sc_ai_copilot/app.py`: Qt overlay, tray, settings and interaction flow.
+- `src/sc_ai_copilot/audio.py`: microphone capture and PCM playback.
+- `src/sc_ai_copilot/ptt.py`: keyboard and joystick push-to-talk.
+- `src/sc_ai_copilot/providers/wyoming.py`: Wyoming Whisper and Piper protocol.
+- `src/sc_ai_copilot/providers/llm.py`: Ollama and llama.cpp clients.
+- `src/sc_ai_copilot/prompts.py`: prompt assembly and response-language selection.
+- `src/sc_ai_copilot/config.py`: TOML configuration and persistence.
+- `tests/`: unit and offscreen Qt lifecycle tests.
