@@ -100,6 +100,80 @@ class ModelDiscoveryTests(unittest.TestCase):
 
         self.assertNotIn("tools", post.call_args.kwargs["json"])
 
+    @patch("voxcomm.providers.llm.press_key_chord", return_value="Left Alt + N")
+    @patch("voxcomm.providers.llm._request")
+    def test_input_control_tool_executes_once_and_returns_result_for_confirmation(self, request, press):
+        request.side_effect = [
+            {"tool_calls": [{"function": {"name": "input_control", "arguments": {"keys": ["LEFTALT", "N"]}}}]},
+            {"content": "OK, Landing Gear toggled."},
+        ]
+
+        answer = chat("ollama", "http://localhost:11434", "model", "Toggle landing gear",
+                      enabled_tools=["input_control"])
+
+        self.assertEqual(answer, "OK, Landing Gear toggled.")
+        press.assert_called_once_with(["LEFTALT", "N"])
+        first_tools = request.call_args_list[0].args[4]
+        self.assertEqual([tool["name"] for tool in first_tools], ["input_control"])
+        self.assertIsNone(request.call_args_list[1].args[4])
+        self.assertIn('"ok": true', request.call_args_list[1].args[3][-1]["content"])
+        system_message = request.call_args_list[0].args[3][0]["content"]
+        self.assertIn("Do not answer with a tutorial", system_message)
+        self.assertIn("one short sentence only", system_message)
+        self.assertIn("not the application's resulting state", system_message)
+
+    @patch("voxcomm.providers.llm.press_key_chord", return_value="Right Alt + R")
+    @patch("voxcomm.providers.llm._request")
+    def test_catalog_action_executes_without_model_round_trip(self, request, press):
+        answer = chat(
+            "ollama", "http://localhost:11434", "unused-model", "Flight ready bitte",
+            enabled_tools=["input_control"],
+            input_actions="flight ready|systeme bereit => RIGHTALT + R => Flight-Systems-Taste gesendet",
+        )
+
+        self.assertEqual(answer, "Flight-Systems-Taste gesendet (Right Alt + R gesendet).")
+        press.assert_called_once_with(["RIGHTALT", "R"])
+        request.assert_not_called()
+
+    @patch("voxcomm.providers.llm.press_key_chord")
+    @patch("voxcomm.providers.llm._request", return_value={"content": "Erklaerung"})
+    def test_catalog_does_not_execute_questions(self, request, press):
+        chat(
+            "ollama", "http://localhost:11434", "model", "Wie schalte ich Flight ready?",
+            enabled_tools=["input_control"],
+            input_actions="flight ready => RIGHTALT + R => Flight ready",
+        )
+
+        press.assert_not_called()
+        request.assert_called_once()
+
+    @patch("voxcomm.providers.llm.press_key_chord")
+    @patch("voxcomm.providers.llm._request", return_value={"tool_calls": [{
+        "function": {"name": "input_control", "arguments": {"keys": ["X"]}},
+    }]})
+    def test_disabled_input_control_tool_is_rejected_if_model_requests_it(self, request, press):
+        answer = chat("ollama", "http://localhost:11434", "model", "Hello")
+
+        self.assertEqual(answer, "The model returned an empty response.")
+        press.assert_not_called()
+
+    @patch("voxcomm.providers.llm.press_key_chord", return_value="X")
+    @patch("voxcomm.providers.llm._request")
+    def test_multiple_input_calls_in_one_response_execute_only_the_first(self, request, press):
+        request.side_effect = [
+            {"tool_calls": [
+                {"function": {"name": "input_control", "arguments": {"keys": ["X"]}}},
+                {"function": {"name": "input_control", "arguments": {"keys": ["Y"]}}},
+            ]},
+            {"content": "Done"},
+        ]
+
+        answer = chat("ollama", "http://localhost:11434", "model", "Press X",
+                      enabled_tools=["input_control"])
+
+        self.assertEqual(answer, "Done")
+        press.assert_called_once_with(["X"])
+
     def test_yesterday_query_preserves_user_domain_and_resolves_relative_date(self):
         now = datetime(2026, 10, 29, 12, 0, tzinfo=timezone.utc)
         query = _dated_search_query("Hallo, wie hat der FCK gestern gespielt?", now)

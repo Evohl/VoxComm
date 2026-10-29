@@ -21,6 +21,7 @@ dev = ["pytest>=8.0"]
 
 [project.scripts]
 voxcomm = "voxcomm.app:main"
+voxcomm-mangohud-status = "voxcomm.mangohud:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

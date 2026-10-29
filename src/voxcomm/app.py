@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 from voxcomm.audio import play_pcm, record_until_released, save_wav
 from voxcomm.branding import APP_ID, APP_NAME, install_launcher, make_app_icon
 from voxcomm.config import AppConfig, load_config, save_config
+from voxcomm.mangohud import publish_status
 from voxcomm.providers.llm import chat, list_models
 from voxcomm.providers.wyoming import filter_voices, list_voices, speak_sync, transcribe_sync, voice_language
 from voxcomm.prompts import VOICE_LANGUAGE_NAMES, build_system_prompt, response_language_for_voice
@@ -234,7 +235,8 @@ class SettingsDialog(QDialog):
         self._update_response_language(self.voice.currentText())
         self.special_prompts = dict(config.special_prompts)
         self.special_hotkeys = {name: key for name, key in config.special_hotkeys.items() if name in self.special_prompts}
-        self.enabled_tools = {name: [tool for tool in tools if tool == "web_search"]
+        self.input_action_catalogs = dict(config.input_action_catalogs)
+        self.enabled_tools = {name: [tool for tool in tools if tool in {"web_search", "input_control"}]
                       for name, tools in config.enabled_tools.items()}
         self.profile_hotkey = HotkeyField("", clearable=True, validator=self._profile_hotkey_conflict)
         self.profile_hotkey.setToolTip("Mit diesem Hotkey wird zusätzlich zu Global dieses Profil verwendet")
@@ -251,6 +253,16 @@ class SettingsDialog(QDialog):
         self.web_search = QCheckBox("Websuche erlauben")
         self.web_search.setToolTip("Suchanfragen werden über DDGS an externe Suchanbieter gesendet; Treffer werden nicht automatisch geöffnet.")
         self.web_search.setChecked("web_search" in self.enabled_tools.get(active_profile, []))
+        self.input_control = QCheckBox("Lokale Tastatureingaben erlauben")
+        self.input_control.setToolTip("Erlaubt diesem Profil einzelne Tastendrücke im Vordergrundfenster über /dev/uinput.")
+        self.input_control.setChecked("input_control" in self.enabled_tools.get(active_profile, []))
+        self.input_action_catalog = QPlainTextEdit(self.input_action_catalogs.get(active_profile, ""))
+        self.input_action_catalog.setPlaceholderText(
+            "Stichwort(e) => Taste(n) => kurze Rueckmeldung\n"
+            "flight ready|systeme bereit => RIGHTALT + R => Flight-Systems-Taste gesendet"
+        )
+        self.input_action_catalog.setMaximumBlockCount(80)
+        self.input_action_catalog.setMinimumHeight(105)
         initial_prompt = config.global_prompt if active_profile == "__global__" else self.special_prompts.get(active_profile, "")
         self.special_prompt = QPlainTextEdit(initial_prompt)
         self.special_prompt.setPlaceholderText("Globaler Basis-Prompt" if active_profile == "__global__" else "Aufgabenwissen und Verhaltensregeln für dieses Profil")
@@ -321,7 +333,8 @@ class SettingsDialog(QDialog):
         ]))
         right.addWidget(self._section("Prompt", [
             ("Profil", self.special_profile), (None, profile_row), ("Profil-Hotkey", self.profile_hotkey),
-            (None, self.web_search), (None, self.special_prompt),
+            (None, self.web_search), (None, self.input_control),
+            ("Aktionsverzeichnis", self.input_action_catalog), (None, self.special_prompt),
         ]), 1)
         columns = QHBoxLayout()
         columns.setSpacing(14)
@@ -413,16 +426,31 @@ class SettingsDialog(QDialog):
 
     def _store_special_profile(self):
         self._store_enabled_tools()
+        self._store_input_action_catalog()
         if self._active_profile_name == "__global__":
             self._global_prompt = self.special_prompt.toPlainText().strip()
             return
         if self._active_profile_name:
             self.special_prompts[self._active_profile_name] = self.special_prompt.toPlainText().strip()
 
+    def _store_input_action_catalog(self):
+        if self._active_profile_name not in self.special_prompts and self._active_profile_name != "__global__":
+            return
+        catalog = self.input_action_catalog.toPlainText().strip()
+        if catalog:
+            self.input_action_catalogs[self._active_profile_name] = catalog
+        else:
+            self.input_action_catalogs.pop(self._active_profile_name, None)
+
     def _store_enabled_tools(self):
         if self._active_profile_name in self.special_prompts or self._active_profile_name == "__global__":
+            tools = []
             if self.web_search.isChecked():
-                self.enabled_tools[self._active_profile_name] = ["web_search"]
+                tools.append("web_search")
+            if self.input_control.isChecked():
+                tools.append("input_control")
+            if tools:
+                self.enabled_tools[self._active_profile_name] = tools
             else:
                 self.enabled_tools.pop(self._active_profile_name, None)
 
@@ -434,6 +462,8 @@ class SettingsDialog(QDialog):
         else:
             prompt = self.special_prompts.get(self._active_profile_name, "")
         self.web_search.setChecked("web_search" in self.enabled_tools.get(self._active_profile_name, []))
+        self.input_control.setChecked("input_control" in self.enabled_tools.get(self._active_profile_name, []))
+        self.input_action_catalog.setPlainText(self.input_action_catalogs.get(self._active_profile_name, ""))
         self.special_prompt.setPlainText(prompt)
         self.special_prompt.setPlaceholderText("Globaler Basis-Prompt" if self._active_profile_name == "__global__" else "Aufgabenwissen und Verhaltensregeln für dieses Profil")
         self._update_profile_controls()
@@ -460,6 +490,8 @@ class SettingsDialog(QDialog):
         else:
             prompt = self.special_prompts.get(self._active_profile_name, "")
         self.web_search.setChecked("web_search" in self.enabled_tools.get(self._active_profile_name, []))
+        self.input_control.setChecked("input_control" in self.enabled_tools.get(self._active_profile_name, []))
+        self.input_action_catalog.setPlainText(self.input_action_catalogs.get(self._active_profile_name, ""))
         self.special_prompt.setPlainText(prompt)
         self.special_prompt.setPlaceholderText("Globaler Basis-Prompt" if self._active_profile_name == "__global__" else "Aufgabenwissen und Verhaltensregeln für dieses Profil")
         self._update_profile_controls()
@@ -493,6 +525,8 @@ class SettingsDialog(QDialog):
             self.enabled_tools[name] = self.enabled_tools.pop(current)
         if current in self.special_hotkeys:
             self.special_hotkeys[name] = self.special_hotkeys.pop(current)
+        if current in self.input_action_catalogs:
+            self.input_action_catalogs[name] = self.input_action_catalogs.pop(current)
         self._refresh_special_profiles(name)
 
     def _remove_special_profile(self):
@@ -506,6 +540,7 @@ class SettingsDialog(QDialog):
         self.special_prompts.pop(current, None)
         self.enabled_tools.pop(current, None)
         self.special_hotkeys.pop(current, None)
+        self.input_action_catalogs.pop(current, None)
         self._refresh_special_profiles("")
 
     def _discover(self, kind: str):
@@ -584,8 +619,11 @@ class SettingsDialog(QDialog):
         config.special_prompts = dict(self.special_prompts)
         config.special_hotkeys = {name: key for name, key in self.special_hotkeys.items() if key and name in self.special_prompts}
         allowed_tool_profiles = {"__global__", *self.special_prompts}
-        config.enabled_tools = {name: ["web_search"] for name, tools in self.enabled_tools.items()
-                    if name in allowed_tool_profiles and "web_search" in tools}
+        config.input_action_catalogs = {name: catalog for name, catalog in self.input_action_catalogs.items()
+                          if name in allowed_tool_profiles and catalog.strip()}
+        config.enabled_tools = {name: [tool for tool in ("web_search", "input_control") if tool in tools]
+                for name, tools in self.enabled_tools.items()
+                if name in allowed_tool_profiles and tools}
         config.active_special_prompt = self.special_profile.currentData() if self.special_profile.currentData() != "__global__" else ""
         config.global_prompt = self._global_prompt
         config.auto_speak = self.auto_speak.isChecked()
@@ -801,8 +839,8 @@ class Overlay(QMainWindow):
             self.tray_icon.show()
             self.hide()
             return
-        self._fit_to_content()
         self.tray_icon.hide()
+        self._fit_to_content()
         self.show()
 
     def _tray_activated(self, reason):
@@ -972,6 +1010,7 @@ class Overlay(QMainWindow):
                     global_prompt=self.config.global_prompt,
                 ),
                 enabled_tools=self.config.enabled_tools.get(profile_name or "__global__", []),
+                input_actions=self.config.input_action_catalogs.get(profile_name or "__global__", ""),
                 cancel_event=cancel_event,
             )
             if cancel_event.is_set():
@@ -994,6 +1033,11 @@ class Overlay(QMainWindow):
 
     def _show_message(self, status: str, text: str):
         self._set_status(status)
+        if AI_MARKER in text:
+            user_text, _marker, answer = text.partition(AI_MARKER)
+            publish_status(f"{user_text}\n{AI_LABEL}{answer}")
+        elif text.startswith(USER_PREFIX):
+            publish_status(text)
         self._hide_after_typing = status != THINKING_STATUS
         self.show()
         self.raise_()
@@ -1014,6 +1058,11 @@ class Overlay(QMainWindow):
 
     def _set_status(self, text: str):
         self.status.setText(text)
+        if text in ("Piper spricht …", "Bereit · PTT zum Sprechen") and AI_MARKER in self._last_text:
+            user_text, _marker, answer = self._last_text.partition(AI_MARKER)
+            publish_status(f"{user_text}\n{AI_LABEL}{answer}")
+        else:
+            publish_status(text)
         self._fit_to_content()
 
     def _type_next_character(self):
@@ -1030,18 +1079,17 @@ class Overlay(QMainWindow):
         height = int(self.transcript.document().size().height() + 0.999) if self.transcript.toPlainText() else 0
         transcript_height = min(height, TRANSCRIPT_MAX_HEIGHT)
         self.transcript.setFixedHeight(transcript_height)
-        transcript_width = (
-            TRANSCRIPT_WIDTH
-            if self._buttons_visible
-            else FULL_WIDTH - OVERLAY_HORIZONTAL_MARGINS
-        )
+        transcript_width = TRANSCRIPT_WIDTH if self._buttons_visible else FULL_WIDTH - OVERLAY_HORIZONTAL_MARGINS
         self.transcript.setFixedWidth(transcript_width)
         scroll_bar = self.transcript.verticalScrollBar()
         scroll_bar.setValue(scroll_bar.maximum())
         self.setFixedWidth(FULL_WIDTH if has_text else COMPACT_WIDTH)
         # Das Layout cached seine Größe bis zum nächsten Event, daher direkt rechnen.
         text_height = self.status.sizeHint().height() + 2 + transcript_height if has_text else 0
-        self.setFixedHeight(max(58, 16 + max(44, text_height)))
+        self.setFixedHeight(max(
+            58,
+            16 + max(44, text_height),
+        ))
 
     def _restore_overlay_position(self):
         screens = QGuiApplication.screens()
@@ -1107,6 +1155,7 @@ class Overlay(QMainWindow):
     def _clear_faded_text(self):
         self.status.clear()
         self.transcript.clear()
+        publish_status("")
         self._typing_text = ""
         self._text_opacity.setOpacity(1)
         self._fit_to_content()

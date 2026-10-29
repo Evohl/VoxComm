@@ -106,22 +106,37 @@ Edit **Global** to change the always-active base prompt. Specialty profiles add 
 
 The **Web search** permission is off by default and is configured independently for Global and each specialty profile. When enabled, the model may use DDGS to search external providers; the recognized user request and generated search query leave the machine. Search results are limited to five short snippets and are passed to the model as untrusted reference data. VoxComm does not automatically open result URLs. Time-sensitive queries (for example, weather tomorrow or today's headlines) are searched immediately using the local system date; if the model says it does not know, VoxComm searches once and asks it to answer from the results. If the model still cannot answer, VoxComm displays the results with their source links.
 
+The **Local keyboard input** permission is off by default and is configured independently for Global and every specialty profile. When enabled, the model may request one unambiguous key tap or modifier chord, such as `X` or `Left Alt + N`; VoxComm sends it through Linux `/dev/uinput` to the current foreground application and returns the actual result to the model for a short confirmation. The application rejects unsupported keys and selected system shortcuts, and never holds or repeats a key. This is general-purpose keyboard input, not game detection: it can affect whichever application currently has focus. It requires the optional `evdev` input dependency and write access to `/dev/uinput`. Mouse buttons, wheel, and analog axes are not implemented.
+
+### In-game status with MangoHud
+
+VoxComm publishes its current short status to `${XDG_CACHE_HOME:-~/.cache}/voxcomm/mangohud-status.json`. MangoHud can display it through its `exec` option. Add these lines to `~/.config/MangoHud/MangoHud.conf` (keep existing options; `legacy_layout=0` is required for `exec`):
+
+```ini
+legacy_layout=0
+custom_text=VoxComm
+exec=/absolute/path/to/voxcomm-mangohud-status
+font_size_secondary=24
+```
+
+Replace the executable path with the output of `command -v voxcomm-mangohud-status`. `font_size_secondary=24` makes VoxComm's `exec` text larger; adjust the value to taste. This also enlarges other secondary MangoHud text. Restart MangoHud/the game after editing. Launch the game with MangoHud enabled, for example with `mangohud %command%` in Steam. MangoHud is a Vulkan/OpenGL overlay, so this status appears only in games where MangoHud itself is active; it is not an independent injector. Status text is limited to 140 characters and expires after 12 seconds. In Gamescope, use MangoHud's documented `--mangoapp` integration instead of the normal layer.
+
 The general push-to-talk binding defaults to F9. Click its field and press a keyboard key or controller button; Esc cancels. Use the adjacent **Remove hotkey** button to clear it. Each specialty profile may have its own **Profile hotkey**. Holding a binding records until release. VoxComm listens to matching `EV_KEY` events across readable `/dev/input` devices, so controller buttons are not tied to a device index. Keyboard presses are observed globally and are not blocked; they also reach the foreground application. A binding can only be assigned once. If input-device access is unavailable, the application reports the issue; pure X11 keyboard sessions can fall back to `pynput`.
 
 In **Tray mode**, clicking the tray icon starts recording and clicking again sends it. The flat tray menu contains recording, settings, replay and exit. Standard Linux tray APIs do not expose reliable press/release events, so the tray uses click-to-toggle rather than hold-to-record. If no system tray is available, VoxComm falls back to overlay mode. The text overlay still appears for status and responses without its buttons, then hides again after the text/audio finishes.
 
 Drag the overlay to move it; VoxComm saves and restores its coordinates. **Reset overlay position** returns it to the top center of the primary display if it has moved off-screen. Under Wayland/XWayland, placement and stacking can still depend on the compositor and game display mode.
 
-## Future tool-use preflight
+## Tool-use boundaries
 
-Shell and keyboard-output tools are not currently implemented. Before adding them, the application should:
+Arbitrary shell execution is not implemented. Tool availability and safety are enforced by the local dispatcher, not only by prompt instructions:
 
 - Web search is implemented through DDGS; it does not fetch result pages. Keep that boundary explicit unless a separate page-fetching feature is designed with host allowlists, redirect rules, timeouts, response-size limits, and protection for private/local network addresses.
 - Check whether the selected Ollama model declares the `tools` capability. A declared capability does not prove that the model reliably selects tools or returns valid arguments; end-to-end tool-call tests are still required.
 - Restrict shell access to named, application-defined operations. Never execute arbitrary model-generated shell strings. Destructive or privileged actions should require explicit user confirmation and run only as the unprivileged application user.
-- Treat keyboard output as a separate permission from keyboard listening. Under Wayland it needs an input-injection backend such as `/dev/uinput`; read access to `/dev/input` does not grant output permission. Keyboard actions should be opt-in, visible, and scoped to the intended foreground target.
-- Let each prompt profile explicitly enable a subset of tools. Enforce those permissions in the application dispatcher, not only in prompt instructions. Disabled tools must be omitted from that profile's tool schema and rejected again if the model requests them.
-- Make preflight results informational (`available`, `unavailable`, or `not configured`). Preflight must not grant permissions, run shell commands, send keystrokes, or access websites as a side effect.
+- Input injection is separate from keyboard listening. Access to `/dev/input` does not grant write access to `/dev/uinput`; local keyboard input is opt-in per profile and is sent only to the currently focused application.
+- Each prompt profile enables its own subset of tools. Disabled tools are omitted from that profile's tool schema and rejected again if the model requests them.
+- Informational preflight checks must not grant permissions, run shell commands, send keystrokes, or access websites as a side effect.
 
 ## Configuration and diagnostics
 
@@ -149,6 +164,7 @@ Project layout:
 - `src/voxcomm/app.py`: Qt overlay, tray, settings and interaction flow.
 - `src/voxcomm/audio.py`: microphone capture and PCM playback.
 - `src/voxcomm/ptt.py`: keyboard and controller-button push-to-talk.
+- `src/voxcomm/input_control.py`: validated local keyboard taps via Linux uinput.
 - `src/voxcomm/providers/wyoming.py`: Wyoming Whisper and Piper protocol.
 - `src/voxcomm/providers/llm.py`: Ollama and llama.cpp clients.
 - `src/voxcomm/prompts.py`: prompt assembly and response-language selection.

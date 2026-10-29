@@ -12,7 +12,9 @@ from PySide6.QtWidgets import (
 )
 
 from voxcomm.app import (
-    COMPACT_WIDTH, FULL_WIDTH, HIDE_DELAY_MS, TRANSCRIPT_MAX_HEIGHT, TYPE_INTERVAL_MS, HotkeyField, Overlay,
+    COMPACT_WIDTH, FULL_WIDTH, HIDE_DELAY_MS,
+    TRANSCRIPT_MAX_HEIGHT, TYPE_INTERVAL_MS,
+    HotkeyField, Overlay,
     SettingsDialog,
     configure_application, prefer_x11_on_wayland, transcript_segments,
 )
@@ -21,6 +23,13 @@ from voxcomm.theme import rgba, system_accent, system_surface
 
 
 class ApplicationLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self._config_patch = patch("voxcomm.app.load_config", return_value=AppConfig())
+        self._config_patch.start()
+
+    def tearDown(self):
+        self._config_patch.stop()
+
     def test_accepting_dialog_does_not_quit_tool_window_app(self):
         app = QApplication.instance() or QApplication([])
         restore_sigint_handler = configure_application(app)
@@ -699,6 +708,67 @@ class ApplicationLifecycleTests(unittest.TestCase):
         self.assertEqual(updated.enabled_tools, {
             "__global__": ["web_search"],
             "Star Citizen": ["web_search"],
+        })
+
+    def test_mangohud_status_includes_spoken_text_and_ai_reply(self):
+        app = QApplication.instance() or QApplication([])
+        with patch("voxcomm.app.PttListener"), patch("voxcomm.app.publish_status") as publish:
+            overlay = Overlay()
+            overlay._show_message("Bereit · Antwort lokal erzeugt", 'Du: Flight ready\nA.I.: "Right Alt + R gesendet."')
+
+            self.assertEqual(publish.call_args.args[0], 'Du: Flight ready\nA.I.: "Right Alt + R gesendet."')
+            overlay.listener.stop()
+            overlay.tray_icon.hide()
+            overlay.deleteLater()
+
+    def test_mangohud_keeps_reply_visible_while_piper_speaks(self):
+        app = QApplication.instance() or QApplication([])
+        with patch("voxcomm.app.PttListener"), patch("voxcomm.app.publish_status") as publish:
+            with patch("voxcomm.app.threading.Thread"):
+                overlay = Overlay()
+                expected = 'Du: Flight ready\nA.I.: "Right Alt + R gesendet."'
+                overlay._show_message("Bereit · Antwort lokal erzeugt", 'Du: Flight ready\nA.I.: "Right Alt + R gesendet."')
+
+                overlay._start_speak('"Right Alt + R gesendet."')
+                self.assertEqual(publish.call_args.args[0], expected)
+
+                overlay._show_message("Bereit · PTT zum Sprechen", "")
+                self.assertEqual(publish.call_args.args[0], expected)
+                overlay.listener.stop()
+                overlay.tray_icon.hide()
+                overlay.deleteLater()
+
+    def test_input_control_permission_is_independent_per_prompt_profile(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig(special_prompts={"Star Citizen": "Ship context"}))
+
+        self.assertFalse(dialog.input_control.isChecked())
+        dialog.input_control.setChecked(True)
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Star Citizen"))
+        self.assertFalse(dialog.input_control.isChecked())
+        dialog.input_control.setChecked(True)
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("__global__"))
+        self.assertTrue(dialog.input_control.isChecked())
+
+        updated = dialog.apply(AppConfig(special_prompts={"Star Citizen": "Ship context"}))
+
+        self.assertEqual(updated.enabled_tools, {
+            "__global__": ["input_control"],
+            "Star Citizen": ["input_control"],
+        })
+
+    def test_action_catalog_is_saved_per_profile(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig(special_prompts={"Star Citizen": "Ship context"}))
+        dialog.input_action_catalog.setPlainText("flight ready => RIGHTALT + R => Flight ready")
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Star Citizen"))
+        dialog.input_action_catalog.setPlainText("gear down => N => Gear command sent")
+
+        updated = dialog.apply(AppConfig(special_prompts={"Star Citizen": "Ship context"}))
+
+        self.assertEqual(updated.input_action_catalogs, {
+            "__global__": "flight ready => RIGHTALT + R => Flight ready",
+            "Star Citizen": "gear down => N => Gear command sent",
         })
 
 
