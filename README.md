@@ -47,6 +47,39 @@ voxcomm --install-launcher
 
 This writes `voxcomm.desktop` and the VoxComm icon beneath `${XDG_DATA_HOME:-~/.local/share}`. Remove those two files to uninstall the launcher. Settings remain under the historical path `${XDG_CONFIG_HOME:-~/.config}/sc-ai-copilot/config.toml` to preserve existing user configuration; the application command itself is `voxcomm` only.
 
+### systemd user service
+
+To start VoxComm automatically with the graphical user session, save this unit as `packaging/systemd/user/voxcomm.service`. The paths below match a checkout at `~/StudioProjects/SC-AI-Copilot`; adjust `WorkingDirectory` and `ExecStart` if yours is elsewhere.
+
+```ini
+[Unit]
+Description=VoxComm voice and communications assistant
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/StudioProjects/SC-AI-Copilot
+ExecStart=%h/StudioProjects/SC-AI-Copilot/.venv/bin/voxcomm
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=15
+
+[Install]
+WantedBy=graphical-session.target
+```
+
+From the repository root, link the unit into the user systemd manager and start it:
+
+```bash
+systemctl --user link "$PWD/packaging/systemd/user/voxcomm.service"
+systemctl --user daemon-reload
+systemctl --user enable --now voxcomm.service
+```
+
+Check status and logs with `systemctl --user status voxcomm.service` and `journalctl --user -u voxcomm.service`. Use `systemctl --user restart voxcomm.service` to restart it, `systemctl --user stop voxcomm.service` to stop it for the current session, or `systemctl --user disable --now voxcomm.service` to disable autostart and stop it. The unit sends SIGINT on shutdown so VoxComm can close the overlay and its owned virtual controller cleanly.
+
 ## First-run preflight
 
 Run these local checks before troubleshooting. They inspect system state but do not change permissions or start services:

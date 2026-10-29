@@ -1,0 +1,16 @@
+[Unit]
+Description=VoxComm voice and communications assistant
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/StudioProjects/SC-AI-Copilot
+ExecStart=%h/StudioProjects/SC-AI-Copilot/.venv/bin/voxcomm
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=15
+
+[Install]
+WantedBy=graphical-session.target
