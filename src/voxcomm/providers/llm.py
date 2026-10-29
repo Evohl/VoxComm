@@ -5,6 +5,7 @@ import re
 from datetime import datetime, timedelta
 
 import httpx
+from threading import Event
 
 from voxcomm.providers.web import search_web
 
@@ -161,7 +162,13 @@ def chat(
     prompt: str,
     system_prompt: str = "",
     enabled_tools: tuple[str, ...] | list[str] = (),
+    cancel_event: Event | None = None,
 ) -> str:
+    def cancelled() -> bool:
+        return cancel_event is not None and cancel_event.is_set()
+
+    if cancelled():
+        return ""
     if not model.strip():
         return "Kein LLM-Modell konfiguriert. Bitte in den Einstellungen ein Modell eintragen."
     base_url = base_url.rstrip("/")
@@ -182,6 +189,8 @@ def chat(
     if tools and FRESH_INFO_PATTERN.search(prompt):
         try:
             results = _search_fresh_info(prompt, local_now)
+            if cancelled():
+                return ""
             search_fallback = _format_search_fallback(results)
             executed = 1
             user_content += (
@@ -194,13 +203,19 @@ def chat(
             user_content += f"\n\nLive web search failed: {str(error)[:300]}"
     messages.append({"role": "user", "content": user_content})
     while True:
+        if cancelled():
+            return ""
         message = _request(provider, base_url, model, messages, tools if executed < MAX_TOOL_CALLS else None)
+        if cancelled():
+            return ""
         calls = _tool_calls(provider, message) if tools else []
         if not calls:
             answer = str(message.get("content") or "").strip()
             if tools and not search_fallback and (not answer or LIVE_INFO_REFUSAL_PATTERN.search(answer)):
                 try:
                     results = _search_fresh_info(prompt, local_now)
+                    if cancelled():
+                        return ""
                     search_fallback = _format_search_fallback(results)
                     messages.append({"role": "assistant", "content": answer})
                     messages.append({
@@ -229,6 +244,8 @@ def chat(
             else:
                 result = _execute_tool(call)
                 executed += 1
+            if cancelled():
+                return ""
             if provider == "ollama":
                 messages.append({"role": "tool", "content": result})
             else:

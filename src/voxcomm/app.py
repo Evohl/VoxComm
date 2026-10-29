@@ -4,6 +4,7 @@ import argparse
 import os
 import signal
 import threading
+import time
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QPropertyAnimation, QRect, QSize, QTimer, Signal, Qt
 from PySide6.QtGui import QAction, QFont, QGuiApplication, QTextCharFormat
@@ -26,6 +27,7 @@ from voxcomm.theme import dialog_stylesheet, make_icon, mix_colors, rgba, system
 LANGUAGE_LABELS = VOICE_LANGUAGE_NAMES
 
 TYPE_INTERVAL_MS = 24
+MIN_PTT_DURATION_MS = 200
 TRANSCRIPT_WIDTH = 480
 TRANSCRIPT_MAX_HEIGHT = 200
 HIDE_DELAY_MS = 3000
@@ -58,8 +60,9 @@ OVERLAY_HORIZONTAL_MARGINS = 24
 class Events(QObject):
     ptt = Signal(str, str)
     message = Signal(str, str)
+    request_message = Signal(str, str, object)
     discovery = Signal(str, object, str)
-    speak = Signal(str)
+    speak = Signal(str, object)
     speech_finished = Signal()
 
 
@@ -653,6 +656,7 @@ class Overlay(QMainWindow):
         self.events = Events()
         self.events.ptt.connect(self._ptt_event)
         self.events.message.connect(self._show_message)
+        self.events.request_message.connect(self._show_request_message)
         self.events.speak.connect(self._start_speak)
         self.events.speech_finished.connect(self._speech_finished)
         self.setWindowTitle(APP_NAME)
@@ -733,8 +737,12 @@ class Overlay(QMainWindow):
         self._hide_after_typing = False
         self._buttons_visible = True
         self._speech_jobs = 0
+        self._speech_cancel = None
         self._recording = False
         self._capture_stop = None
+        self._ptt_pressed_at = None
+        self._request_cancellations = set()
+        self._request_cancellations_lock = threading.Lock()
         self._last_response = ""
         self._last_text = ""
         self._position_tracking_enabled = False
@@ -873,6 +881,8 @@ class Overlay(QMainWindow):
             self._hide_after_typing = True
             self._schedule_hide()
         elif kind == "pressed":
+            self._stop_speaking()
+            self._ptt_pressed_at = time.monotonic()
             self._hide_timer.stop()
             self._hide_after_typing = False
             self._tray_recording = True
@@ -887,31 +897,68 @@ class Overlay(QMainWindow):
             if not self._recording:
                 self._recording = True
                 self._capture_stop = threading.Event()
-                threading.Thread(target=self._capture, args=(self._capture_stop, text), daemon=True).start()
+                request_cancel = threading.Event()
+                with self._request_cancellations_lock:
+                    self._request_cancellations.add(request_cancel)
+                threading.Thread(
+                    target=self._capture,
+                    args=(self._capture_stop, text, request_cancel),
+                    daemon=True,
+                ).start()
         elif kind == "released":
+            press_duration = time.monotonic() - self._ptt_pressed_at if self._ptt_pressed_at is not None else None
+            self._ptt_pressed_at = None
             self._recording = False
             self._tray_recording = False
             self.tray_toggle_action.setText("Aufnahme starten")
             self.tray_icon.setToolTip(APP_NAME)
+            is_short_press = press_duration is not None and press_duration < MIN_PTT_DURATION_MS / 1000
+            if is_short_press:
+                self._cancel_active_work()
             if self._capture_stop is not None:
                 self._capture_stop.set()
                 self._capture_stop = None
-            self._set_status("Verarbeite Sprache …")
+            if not is_short_press:
+                self._set_status("Verarbeite Sprache …")
 
-    def _capture(self, stop_event: threading.Event, profile: str = ""):
+    def _cancel_active_work(self):
+        with self._request_cancellations_lock:
+            for cancel_event in self._request_cancellations:
+                cancel_event.set()
+        self._stop_speaking()
+        self._type_timer.stop()
+        self._typing_text = ""
+        self.transcript.clear()
+        self._hide_timer.stop()
+        self._hide_after_typing = True
+        self._set_status("Bereit · Anfrage abgebrochen")
+        self._schedule_hide()
+
+    def _capture(self, stop_event: threading.Event, profile: str = "", cancel_event=None):
+        cancel_event = cancel_event or threading.Event()
+        with self._request_cancellations_lock:
+            self._request_cancellations.add(cancel_event)
         try:
             audio = record_until_released(lambda: not stop_event.is_set(), self.config.sample_rate)
+            if cancel_event.is_set():
+                return
             if not audio:
+                return
+            minimum_bytes = self.config.sample_rate * 2 * MIN_PTT_DURATION_MS // 1000
+            if len(audio) < minimum_bytes:
+                self.events.request_message.emit("Bereit · Aufnahme zu kurz", "", cancel_event)
                 return
             debug_wav = os.environ.get("SC_AI_COPILOT_DEBUG_WAV")
             if debug_wav:
                 save_wav(audio, debug_wav, self.config.sample_rate)
             text = transcribe_sync(audio, self.config.stt_url, self.config.sample_rate, self.config.stt_language)
-            if not text:
-                self.events.message.emit("Bereit · keine Sprache erkannt", "")
+            if cancel_event.is_set():
                 return
-            self.events.message.emit(THINKING_STATUS, f"{USER_PREFIX}{text}\n")
-            profile_name = profile if profile in self.config.special_prompts else self.config.active_special_prompt
+            if not text:
+                self.events.request_message.emit("Bereit · keine Sprache erkannt", "", cancel_event)
+                return
+            self.events.request_message.emit(THINKING_STATUS, f"{USER_PREFIX}{text}\n", cancel_event)
+            profile_name = profile if profile in self.config.special_prompts else ""
             answer = chat(
                 self.config.llm_provider,
                 self.config.llm_url,
@@ -925,12 +972,25 @@ class Overlay(QMainWindow):
                     global_prompt=self.config.global_prompt,
                 ),
                 enabled_tools=self.config.enabled_tools.get(profile_name or "__global__", []),
+                cancel_event=cancel_event,
             )
-            self.events.message.emit("Bereit · Antwort lokal erzeugt", f"{USER_PREFIX}{text}{AI_MARKER}{answer}")
-            if self.config.auto_speak:
-                self.events.speak.emit(answer)
+            if cancel_event.is_set():
+                return
+            self.events.request_message.emit(
+                "Bereit · Antwort lokal erzeugt", f"{USER_PREFIX}{text}{AI_MARKER}{answer}", cancel_event
+            )
+            if self.config.auto_speak and not cancel_event.is_set():
+                self.events.speak.emit(answer, cancel_event)
         except Exception as error:
-            self.events.message.emit(f"Fehler · {error}", "")
+            if not cancel_event.is_set():
+                self.events.request_message.emit(f"Fehler · {error}", "", cancel_event)
+        finally:
+            with self._request_cancellations_lock:
+                self._request_cancellations.discard(cancel_event)
+
+    def _show_request_message(self, status: str, text: str, cancel_event: threading.Event):
+        if not cancel_event.is_set():
+            self._show_message(status, text)
 
     def _show_message(self, status: str, text: str):
         self._set_status(status)
@@ -1060,21 +1120,34 @@ class Overlay(QMainWindow):
         self._show_message("Piper spricht …", self._last_text)
         self._start_speak(self._last_response)
 
-    def _start_speak(self, text: str):
+    def _start_speak(self, text: str, cancel_event=None):
+        if cancel_event is not None and cancel_event.is_set():
+            return
+        self._stop_speaking()
+        cancel_event = cancel_event or threading.Event()
+        self._speech_cancel = cancel_event
         self._set_status("Piper spricht …")
         self._speech_jobs += 1
         self._hide_timer.stop()
         self._fade_animation.stop()
         self._text_opacity.setOpacity(1)
-        threading.Thread(target=self._speak, args=(text,), daemon=True).start()
+        threading.Thread(target=self._speak, args=(text, cancel_event), daemon=True).start()
 
-    def _speak(self, text: str):
+    def _stop_speaking(self):
+        if self._speech_cancel is not None:
+            self._speech_cancel.set()
+
+    def _speak(self, text: str, cancel_event: threading.Event):
         try:
             audio, sample_rate = speak_sync(text, self.config.tts_url, self.config.tts_voice)
-            play_pcm(audio, sample_rate)
-            self.events.message.emit("Bereit · PTT zum Sprechen", "")
+            if cancel_event.is_set():
+                return
+            play_pcm(audio, sample_rate, cancel_event)
+            if not cancel_event.is_set():
+                self.events.request_message.emit("Bereit · PTT zum Sprechen", "", cancel_event)
         except Exception as error:
-            self.events.message.emit(f"Piper-Fehler · {error}", "")
+            if not cancel_event.is_set():
+                self.events.request_message.emit(f"Piper-Fehler · {error}", "", cancel_event)
         finally:
             self.events.speech_finished.emit()
 

@@ -27,6 +27,22 @@ def save_wav(audio: bytes, path: str, sample_rate: int = 16000) -> None:
         recording.writeframes(audio)
 
 
-def play_pcm(audio: bytes, sample_rate: int) -> None:
-    if audio:
-        sd.play(np.frombuffer(audio, dtype=np.int16), samplerate=sample_rate, blocking=True)
+def play_pcm(audio: bytes, sample_rate: int, cancel_event=None) -> None:
+    samples = np.frombuffer(audio, dtype=np.int16)
+    if not samples.size or (cancel_event is not None and cancel_event.is_set()):
+        return
+
+    stream = sd.OutputStream(samplerate=sample_rate, channels=1, dtype="int16")
+    try:
+        stream.start()
+        chunk_size = max(1, sample_rate // 50)
+        for offset in range(0, samples.size, chunk_size):
+            if cancel_event is not None and cancel_event.is_set():
+                break
+            stream.write(samples[offset:offset + chunk_size])
+    finally:
+        if cancel_event is not None and cancel_event.is_set():
+            stream.abort()
+        else:
+            stream.stop()
+        stream.close()

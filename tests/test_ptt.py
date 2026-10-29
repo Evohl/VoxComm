@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from evdev import ecodes
 
-from voxcomm.ptt import PttListener, evdev_key_code, evdev_key_name
+from voxcomm.ptt import PttListener, capture_input, evdev_key_code, evdev_key_name
 
 
 class BrokenKeyboardListener:
@@ -40,6 +40,43 @@ class FakeKeyboard:
 
 
 class PttTests(unittest.TestCase):
+    def test_capture_input_reads_a_gamepad_button(self):
+        class FakeDevice:
+            def capabilities(self):
+                return {ecodes.EV_KEY: [ecodes.BTN_SOUTH]}
+
+            def read(self):
+                return [SimpleNamespace(type=ecodes.EV_KEY, code=ecodes.BTN_SOUTH, value=1)]
+
+            def close(self):
+                self.closed = True
+
+        class FakeSelector:
+            def __init__(self):
+                self.device = None
+
+            def register(self, device, _events):
+                self.device = device
+
+            def get_map(self):
+                return {self.device.fileno(): SimpleNamespace(fileobj=self.device)}
+
+            def select(self, timeout=None):
+                return [(SimpleNamespace(fileobj=self.device), 1)]
+
+            def close(self):
+                pass
+
+        device = FakeDevice()
+        selector = FakeSelector()
+        with patch("evdev.list_devices", return_value=["/dev/input/event-gamepad"]):
+            with patch("evdev.InputDevice", return_value=device):
+                with patch("selectors.DefaultSelector", return_value=selector):
+                    with patch.object(device, "fileno", return_value=1, create=True):
+                        self.assertEqual(capture_input(threading.Event()), "BTN_SOUTH")
+
+        self.assertTrue(device.closed)
+
     def test_key_names_map_to_evdev_codes(self):
         self.assertEqual(evdev_key_code("F9"), ecodes.KEY_F9)
         self.assertEqual(evdev_key_code("page_up"), ecodes.KEY_PAGEUP)

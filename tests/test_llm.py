@@ -1,4 +1,5 @@
 import unittest
+import threading
 from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
@@ -6,6 +7,26 @@ from voxcomm.providers.llm import _dated_search_query, chat, list_models
 
 
 class ModelDiscoveryTests(unittest.TestCase):
+    @patch("voxcomm.providers.llm._request")
+    @patch("voxcomm.providers.llm.search_web")
+    def test_cancelled_model_request_does_not_run_tools_after_return(self, search, request):
+        cancel_event = threading.Event()
+
+        def finish_request(*_args, **_kwargs):
+            cancel_event.set()
+            return {"tool_calls": [{"function": {"name": "web_search", "arguments": {"query": "topic"}}}]}
+
+        request.side_effect = finish_request
+
+        answer = chat(
+            "ollama", "http://localhost:11434", "model", "Find this",
+            enabled_tools=["web_search"], cancel_event=cancel_event,
+        )
+
+        self.assertEqual(answer, "")
+        request.assert_called_once()
+        search.assert_not_called()
+
     @patch("voxcomm.providers.llm.httpx.post")
     def test_chat_sends_system_prompt_before_user_message(self, post):
         response = Mock()

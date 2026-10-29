@@ -235,7 +235,12 @@ class ApplicationLifecycleTests(unittest.TestCase):
 
     def test_profile_hotkey_selects_prompt_profile_for_recording(self):
         app = QApplication.instance() or QApplication([])
-        config = AppConfig(special_prompts={"Star Citizen": "Ship context"}, special_hotkeys={"Star Citizen": "f10"})
+        config = AppConfig(
+            special_prompts={"Star Citizen": "Ship context"},
+            special_hotkeys={"Star Citizen": "f10"},
+            active_special_prompt="Star Citizen",
+            enabled_tools={"__global__": ["web_search"]},
+        )
         with patch("voxcomm.app.load_config", return_value=config):
             with patch("voxcomm.app.PttListener") as listener_class:
                 with patch("voxcomm.app.threading.Thread") as thread_class:
@@ -252,14 +257,59 @@ class ApplicationLifecycleTests(unittest.TestCase):
 
         with patch("voxcomm.app.load_config", return_value=config), patch("voxcomm.app.PttListener"):
             overlay = Overlay()
-            prompts = []
-            with patch("voxcomm.app.record_until_released", return_value=b"x"), \
-                 patch("voxcomm.app.transcribe_sync", return_value="Hallo"), \
-                 patch("voxcomm.app.chat", side_effect=lambda *a, **k: prompts.append(k["system_prompt"]) or "Antwort"):
+            requests = []
+            with (
+                patch("voxcomm.app.record_until_released", return_value=b"\0" * 9600),
+                patch("voxcomm.app.transcribe_sync", return_value="Hallo"),
+                patch("voxcomm.app.chat", side_effect=lambda *a, **k: requests.append(k) or "Antwort"),
+            ):
                 overlay._capture(threading.Event(), "Star Citizen")
                 overlay._capture(threading.Event(), "")
-            self.assertIn("Ship context", prompts[0])
-            self.assertNotIn("Ship context", prompts[1])
+            self.assertIn("Ship context", requests[0]["system_prompt"])
+            self.assertEqual(requests[0]["enabled_tools"], [])
+            self.assertNotIn("Ship context", requests[1]["system_prompt"])
+            self.assertEqual(requests[1]["enabled_tools"], ["web_search"])
+            overlay.listener.stop()
+            overlay.tray_icon.hide()
+            overlay.deleteLater()
+
+    def test_short_ptt_capture_is_discarded_before_transcription(self):
+        app = QApplication.instance() or QApplication([])
+        with patch("voxcomm.app.PttListener"):
+            overlay = Overlay()
+            with patch("voxcomm.app.record_until_released", return_value=b"\0" * 6368):
+                with patch("voxcomm.app.transcribe_sync") as transcribe:
+                    with patch("voxcomm.app.chat") as chat:
+                        overlay._capture(threading.Event())
+
+            transcribe.assert_not_called()
+            chat.assert_not_called()
+            self.assertEqual(overlay.status.text(), "Bereit · Aufnahme zu kurz")
+            overlay.listener.stop()
+            overlay.tray_icon.hide()
+            overlay.deleteLater()
+
+    def test_sub_200ms_ptt_tap_cancels_active_request_and_visible_output(self):
+        app = QApplication.instance() or QApplication([])
+        with patch("voxcomm.app.PttListener"), patch("voxcomm.app.threading.Thread"):
+            overlay = Overlay()
+            active_request = threading.Event()
+            with overlay._request_cancellations_lock:
+                overlay._request_cancellations.add(active_request)
+            overlay._show_message("Antwort", "A.I.: laufende Ausgabe")
+            self.assertTrue(overlay._type_timer.isActive())
+
+            with patch("voxcomm.app.time.monotonic", side_effect=[1.0, 1.199]):
+                overlay._ptt_event("pressed", "")
+                overlay._ptt_event("released", "")
+
+            self.assertTrue(active_request.is_set())
+            self.assertFalse(overlay._type_timer.isActive())
+            self.assertEqual(overlay.transcript.toPlainText(), "")
+            self.assertEqual(overlay.status.text(), "Bereit · Anfrage abgebrochen")
+            overlay._show_request_message("Veraltete Antwort", "A.I.: nicht anzeigen", active_request)
+            self.assertEqual(overlay.status.text(), "Bereit · Anfrage abgebrochen")
+            self.assertEqual(overlay.transcript.toPlainText(), "")
             overlay.listener.stop()
             overlay.tray_icon.hide()
             overlay.deleteLater()
@@ -422,6 +472,39 @@ class ApplicationLifecycleTests(unittest.TestCase):
             overlay.events.speech_finished.emit()
 
             self.assertTrue(overlay._hide_timer.isActive())
+            overlay.listener.stop()
+            overlay.deleteLater()
+
+    def test_new_recording_stops_and_cancels_active_speech(self):
+        app = QApplication.instance() or QApplication([])
+        with patch("voxcomm.app.PttListener"), patch("voxcomm.app.threading.Thread"):
+            overlay = Overlay()
+            overlay._start_speak("Gesprochene Antwort")
+            speech_cancel = overlay._speech_cancel
+
+            overlay._ptt_event("pressed", "")
+
+            self.assertTrue(speech_cancel.is_set())
+            self.assertTrue(overlay._recording)
+            self.assertEqual(overlay.status.text().split(" · ")[0], "Aufnahme läuft")
+            overlay.listener.stop()
+            overlay.deleteLater()
+
+    def test_cancelled_speech_does_not_start_playback_after_generation(self):
+        app = QApplication.instance() or QApplication([])
+        with patch("voxcomm.app.PttListener"):
+            overlay = Overlay()
+            cancel_event = threading.Event()
+            cancel_event.set()
+            completed = []
+            overlay.events.speech_finished.connect(lambda: completed.append(True))
+
+            with patch("voxcomm.app.speak_sync", return_value=(b"audio", 22050)):
+                with patch("voxcomm.app.play_pcm") as play_pcm:
+                    overlay._speak("Antwort", cancel_event)
+
+            play_pcm.assert_not_called()
+            self.assertEqual(completed, [True])
             overlay.listener.stop()
             overlay.deleteLater()
 

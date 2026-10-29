@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import selectors
 import threading
+import time
 
 _KEY_ALIASES = {
     "ctrl": "LEFTCTRL", "ctrl_l": "LEFTCTRL", "ctrl_r": "RIGHTCTRL",
