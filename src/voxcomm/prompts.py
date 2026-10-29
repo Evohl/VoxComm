@@ -20,6 +20,18 @@ VOICE_LANGUAGE_NAMES = {
 }
 
 
+VOICE_OUTPUT_RULES = (
+    "Deine Antwort wird von einer Sprachausgabe (TTS) vorgelesen und nicht gelesen. Optimiere sie fürs Zuhören: "
+    "Schreibe kurze, klare Sätze in natürlicher gesprochener Sprache und komme direkt zum Punkt. "
+    "Verwende kein Markdown und keine Emojis oder Sonderzeichen: keine Sternchen, Rauten, Backticks, Tabellen, "
+    "Überschriften, Aufzählungszeichen oder nummerierten Listen. Zähle mehrere Punkte stattdessen in einem Satz "
+    "oder mit Wörtern wie erstens, zweitens und danach auf. "
+    "Schreibe Zahlen, Einheiten, Symbole und Abkürzungen so, wie man sie spricht (zum Beispiel zwölf Grad, "
+    "Kilometer pro Stunde, zum Beispiel statt z. B.). Lies keine Internetadressen vor; nenne stattdessen den "
+    "Namen der Quelle."
+)
+
+
 def response_language_for_voice(voice_name: str, fallback: str = "Deutsch") -> str:
     if not voice_name:
         return fallback.strip() or "Deutsch"
@@ -42,6 +54,7 @@ def build_system_prompt(
         global_prompt.strip(),
         f"Lokale aktuelle Zeit: {timestamp}. Dieser Zeitstempel ist maßgeblich; leite relative Zeitangaben wie gestern, heute und morgen daraus ab.",
         f"Antworte immer in der Sprache {response_language}; diese Sprache ist aus der ausgewählten Piper-Stimme abgeleitet.",
+        VOICE_OUTPUT_RULES,
     ]
     extra = special_prompt.strip()
     if extra:

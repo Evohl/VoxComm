@@ -19,6 +19,16 @@ class PromptTests(unittest.TestCase):
         self.assertIn("Erfinde keine Fakten", prompt)
         self.assertNotIn("Star Citizen", prompt)
 
+    def test_prompt_optimizes_output_for_speech_before_the_profile(self):
+        prompt = build_system_prompt(
+            piper_voice="de_DE-thorsten-medium", special_prompt_name="Star Citizen", special_prompt="Kontext")
+
+        self.assertIn("Sprachausgabe (TTS)", prompt)
+        self.assertIn("kein Markdown und keine Emojis", prompt)
+        self.assertIn("Internetadressen", prompt)
+        self.assertLess(prompt.index("Sprachausgabe (TTS)"), prompt.index("Spezialprofil: Star Citizen"))
+        self.assertIn("Sprachausgabe (TTS)", build_system_prompt(global_prompt=""))
+
     def test_special_profile_is_separate_and_optional(self):
         base = build_system_prompt(piper_voice="en_US-amy-medium")
         extended = build_system_prompt(
