@@ -1,0 +1,70 @@
+Im Moment Inaktiv (belegt aber nicht im prompt):
+
+Lock All Doors => lock all doors|doors locked|tueren verriegeln => Button14 => Tueren verriegelt.
+Unlock All Doors => unlock all doors|doors unlocked|tueren entriegeln => Button15 => Tueren entriegelt.
+Port Lock All => port lock all|lock all ports|ports verriegeln => Button16 => Ports verriegelt.
+Port Unlock All => port unlock all|unlock all ports|ports entriegeln => Button17 => Ports entriegelt.
+
+Aktiv:
+
+Mining Operator Mode => mining operator mode|switch to mining|bergbaumodus => Button1 => Mining-Modus gewaehlt.
+Salvage Operator Mode => salvage operator mode|switch to salvage|bergungsmodus => Button2 => Salvage-Modus gewaehlt.
+Refuel Operator Mode => refuel operator mode|switch to refuel|auftankmodus => Button3 => Refuel-Modus gewaehlt.
+Scanning Operator Mode => scanning operator mode|switch to scanning|scanmodus => Button4 => Scanning-Modus gewaehlt.
+Quantum Operator Mode => quantum operator mode|switch to quantum|quantummodus => Button5 => Quantum-Modus gewaehlt.
+Missile Operator Mode => missile operator mode|switch to missiles|raketenmodus => Button6 => Missile-Modus gewaehlt.
+Guns Operator Mode => guns operator mode|switch to guns|waffenmodus => Button7 => Guns-Modus gewaehlt.
+Flight Operator Mode => flight operator mode|switch to flight|flugmodus => Button8 => Flight-Modus gewaehlt.
+Light Amplification On => light amplification on|night vision on|lichtverstaerkung an => Button9 => Lichtverstaerkung an.
+Light Amplification Off => light amplification off|night vision off|lichtverstaerkung aus => Button10 => Lichtverstaerkung aus.
+Self Destruct => self destruct|destroy ship|selbstzerstoerung => Button11 => Selbstzerstoerung ausgeloest.
+Open All Doors => open all doors|open doors|tueren oeffnen => Button12 => Tueren geoeffnet.
+Close All Doors => close all doors|close doors|tueren schliessen => Button13 => Tueren geschlossen.
+Cruise Mode On => cruise mode enable|enable cruise mode|cruise einschalten => Button18 => Cruise Mode an.
+Cruise Mode Off => cruise mode disable|disable cruise mode|cruise ausschalten => Button19 => Cruise Mode aus.
+Decoupled Mode On => enable decoupled mode|decoupled mode on|entkoppelten modus einschalten => Button20 => Decoupled Mode an.
+Decoupled Mode Off => disable decoupled mode|decoupled mode off|entkoppelten modus ausschalten => Button21 => Decoupled Mode aus.
+Speed Limiter On => speed limiter enable|enable speed limiter|geschwindigkeitsbegrenzer einschalten => Button22 => Speed Limiter an.
+Speed Limiter Off => speed limiter disable|disable speed limiter|geschwindigkeitsbegrenzer ausschalten => Button23 => Speed Limiter aus.
+G-Force Safety On => g force safety on|g-force safety on|g kraft sicherheit an => Button24 => G-Force-Sicherheit an.
+G-Force Safety Off => g force safety off|g-force safety off|g kraft sicherheit aus => Button25 => G-Force-Sicherheit aus.
+Landing System Deploy => deploy landing system|landing gear down|fahrwerk ausfahren => Button26 => Fahrwerk ausgefahren.
+Landing System Retract => retract landing system|landing gear up|fahrwerk einfahren => Button27 => Fahrwerk eingefahren.
+VTOL On => enable vtol|vtol on|vtol aktivieren => Button28 => VTOL an.
+VTOL Off => disable vtol|vtol off|vtol deaktivieren => Button29 => VTOL aus.
+Autoland => autoland|land automatically|automatisch landen => Button30 => Autoland angefordert.
+Request Landing => call hangar service|Hangar service kontaktieren => Button31 => Landeanfrage gestellt.
+Request Cargo Loading => call cargo service|Cargo service kontaktieren => Button32 => Cargo-Loading angefordert.
+Master Mode NAV => set master mode nav|nav mode|nav modus => Button33 => NAV-Modus gewaehlt.
+Master Mode SCM => set master mode scm|scm mode|scm modus => Button34 => SCM-Modus gewaehlt.
+Request Quantum Jump => request quantum jump|request jump|quantumsprung anfragen => Button35 => Sprunganfrage gestellt.
+Engage Quantum Drive Hold => engage quantum drive|hold quantum drive|quantumantrieb aktivieren => Button36 => Quantum Drive aktiviert.
+Docking => request docking|start docking|andocken => Button37 => Docking angefordert.
+Auto Targeting On => auto targeting toggle on|auto targeting on|zielerfassung einschalten => Button38 => Auto Targeting an.
+Auto Targeting Off => auto targeting toggle off|auto targeting off|zielerfassung ausschalten => Button39 => Auto Targeting aus.
+Hail Target => hail target|hail my target|hail selected target|ziel anfunken => Button40 => Ziel anfunken.
+Activate Scanning => activate scanning|start scanning|scan aktivieren => Button41 => Scanning aktiviert.
+Jettison Cargo => jettison cargo|dump cargo|ladung abwerfen => Button42 => Cargo abgeworfen.
+Gimbal Locked => gimbal state set locked|lock gimbals|gimbals sperren => Button43 => Gimbals gesperrt.
+Gimbal Unlocked => gimbal state set unlocked|unlock gimbals|gimbals entsperren => Button44 => Gimbals entsperrt.
+Staggered Fire On => staggered fire on|staggered fire enable|versetztes feuern an => Button45 => Staggered Fire an.
+Staggered Fire Off => staggered fire off|staggered fire disable|versetztes feuern aus => Button46 => Staggered Fire aus.
+Gunnery UI Magnification On => gunnery ui magnification on|gunnery magnification on|zielvisier vergroesserung an => Button47 => Gunnery-Vergroesserung an.
+Gunnery UI Magnification Off => gunnery ui magnification off|gunnery magnification off|zielvisier vergroesserung aus => Button48 => Gunnery-Vergroesserung aus.
+Shield Raise Level Front => shield raise level front|raise front shields|schilde vorne verstaerken => Button49 => Schildenergie vorne erhoeht.
+Shield Raise Level Back => shield raise level back|raise rear shields|schilde hinten verstaerken => Button50 => Schildenergie hinten erhoeht.
+Shield Raise Level Left => shield raise level left|raise left shields|schilde links verstaerken => Button51 => Schildenergie links erhoeht.
+Shield Raise Level Right => shield raise level right|raise right shields|schilde rechts verstaerken => Button52 => Schildenergie rechts erhoeht.
+Shield Raise Level Top => shield raise level top|raise top shields|schilde oben verstaerken => Button53 => Schildenergie oben erhoeht.
+Shield Raise Level Bottom => shield raise level bottom|raise bottom shields|schilde unten verstaerken => Button54 => Schildenergie unten erhoeht.
+Shield Reset Levels => shield reset levels|reset shield levels|schildverteilung zuruecksetzen => Button55 => Schildverteilung zurueckgesetzt.
+Ship Power On => set ship power on|ship power on|schiffssysteme einschalten => Button56 => Schiffssysteme an.
+Ship Power Off => set ship power off|ship power off|schiffssysteme ausschalten => Button57 => Schiffssysteme aus.
+Thrusters Power On => set thrusters power on|thrusters power on|triebwerke einschalten => Button58 => Triebwerke an.
+Thrusters Power Off => set thrusters power off|thrusters power off|triebwerke ausschalten => Button59 => Triebwerke aus.
+Shields Power On => set shields power on|shields power on|schilde einschalten => Button60 => Schilde an.
+Shields Power Off => set shields power off|shields power off|schilde ausschalten => Button61 => Schilde aus.
+Weapons Power On => set weapons power on|weapons power on|waffen einschalten => Button62 => Waffen an.
+Weapons Power Off => set weapons power off|weapons power off|waffen ausschalten => Button63 => Waffen aus.
+Headlights On => headlights on|turn headlights on|lights on|scheinwerfer an => Button64 => Scheinwerfer an.
+Headlights Off => headlights off|turn headlights off|lights off|scheinwerfer aus => Button65 => Scheinwerfer aus.

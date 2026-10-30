@@ -374,7 +374,10 @@ class ModelDiscoveryTests(unittest.TestCase):
         self.assertEqual(list(first_tools[0]["parameters"]["properties"]), ["action"])
         self.assertEqual(first_tools[0]["parameters"]["properties"]["action"]["enum"], ["Landing Gear On", "Landing Gear Off"])
         self.assertIsNone(request.call_args_list[1].args[4])
-        self.assertIn('"ok": true', request.call_args_list[1].args[3][-1]["content"])
+        tool_result = request.call_args_list[1].args[3][-1]["content"]
+        self.assertIn('"ok": true', tool_result)
+        self.assertIn('"reply": "Landing gear on"', tool_result)
+        self.assertNotIn('"event"', tool_result)
         system_message = request.call_args_list[0].args[3][0]["content"]
         self.assertIn("Never send keyboard input", system_message)
 
@@ -390,7 +393,7 @@ class ModelDiscoveryTests(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(answer, "Flight Systems eingeschaltet (Button1 gesendet).")
+        self.assertEqual(answer, "Flight Systems eingeschaltet")
         press.assert_called_once_with("Button1")
         request.assert_not_called()
 

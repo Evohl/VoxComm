@@ -55,8 +55,8 @@ WEB_SEARCH_TOOL = {
 INPUT_CONTROL_TOOL = {
     "name": "input_control",
     "description": (
-        "Execute exactly one configured VoxComm controller action. Choose a named On or Off switch from the active "
-        "profile. Never invent buttons or use keyboard input. If the requested switch is not configured or is "
+        "Execute exactly one configured VoxComm controller action from the active profile. Never invent buttons "
+        "or use keyboard input. If the requested action is not configured or is "
         "ambiguous, ask one short clarifying question."
     ),
     "parameters": {
@@ -80,7 +80,7 @@ def _input_control_tool(actions: list[dict[str, object]]) -> dict:
                 "action": {
                     "type": "string",
                     "enum": [action["name"] for action in actions],
-                    "description": "Choose one configured On/Off switch by name",
+                    "description": "Choose one configured controller action by name",
                 },
             },
             "required": ["action"],
@@ -301,8 +301,8 @@ def _execute_tool(
             result = {"ok": False, "error": "Choose a configured controller action"}
         else:
             try:
-                button = press_gamepad_button(action["button"])
-                result = {"ok": True, "action": action["name"], "event": button}
+                press_gamepad_button(action["button"])
+                result = {"ok": True, "action": action["name"], "reply": action["reply"]}
             except Exception as error:
                 result = {"ok": False, "error": str(error)[:300]}
     else:
@@ -395,7 +395,7 @@ def chat(
             try:
                 report_status(tr("Controller action: {action} …", action=action["name"]))
                 button = press_gamepad_button(action["button"])
-                return f"{action['reply']} ({button} gesendet)."
+                return str(action["reply"])
             except Exception as error:
                 return tr("Input was not sent: {error}", error=str(error)[:200])
     if not model.strip():
@@ -424,12 +424,13 @@ def chat(
     if "input_control" in enabled_tool_names:
         input_note = (
             "ACTION MODE: VoxComm controller actions are enabled for this profile. When the user requests a "
-            "specific state change, choose the matching configured On or Off action and call input_control. "
+            "specific state change, choose its matching configured On or Off action when available. For a "
+            "configured single/toggle action, call it only when the user's request clearly names that action. "
             "Never send keyboard input, invent a button, or substitute a toggle for an explicit On/Off action. "
             "If no matching action is configured or the requested state is unclear, ask one concise clarifying "
-            "question and do not send input. After the tool result, reply in one short sentence: confirm the "
-            "configured action was sent, but do not claim the application's state changed unless independently "
-            "observed."
+            "question and do not send input. After the tool result, respond briefly without repeating the action "
+            "name, button number, or saying 'command sent'. Do not claim the application's state changed unless "
+            "independently observed."
         )
         if messages:
             messages[0]["content"] += "\n\n" + input_note

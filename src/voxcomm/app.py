@@ -11,8 +11,8 @@ from PySide6.QtGui import QAction, QFont, QGuiApplication, QTextCharFormat
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFormLayout, QFrame, QGraphicsOpacityEffect,
     QHBoxLayout, QLabel, QInputDialog, QLineEdit, QMainWindow, QMenu, QMessageBox,
-    QPlainTextEdit, QPushButton, QSpinBox, QSystemTrayIcon, QTabWidget, QTableWidget,
-    QTableWidgetItem, QTextEdit, QToolButton, QVBoxLayout, QWidget,
+    QPlainTextEdit, QPushButton, QSpinBox, QSystemTrayIcon, QTabWidget, QTextEdit,
+    QToolButton, QVBoxLayout, QWidget,
 )
 
 from voxcomm.audio import play_stream, prefetch, record_until_released, save_wav
@@ -72,7 +72,7 @@ class Events(QObject):
     activity = Signal(str, object)
     discovery = Signal(str, object, str)
     thinking = Signal(int, object)
-    speak = Signal(object, object)
+    speak = Signal(object, object, object)
     speech_finished = Signal()
 
 
@@ -255,13 +255,9 @@ class SettingsDialog(QDialog):
         language_index = self.voice_language.findData(config.voice_language)
         self.voice_language.setCurrentIndex(max(language_index, 0))
         self.voice_language.currentIndexChanged.connect(self._refresh_voice_options)
-        self.voice = QComboBox()
-        self.voice.setEditable(True)
-        self.voice.setCurrentText(config.tts_voice)
-        self.voice.currentTextChanged.connect(self._update_response_language)
+        self._global_voice = config.tts_voice
         self.response_language = QLabel()
         self.response_language.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self._update_response_language(self.voice.currentText())
         self.special_prompts = dict(config.special_prompts)
         self.special_hotkeys = {name: key for name, key in config.special_hotkeys.items() if name in self.special_prompts}
         self.input_action_catalogs = dict(config.input_action_catalogs)
@@ -283,19 +279,14 @@ class SettingsDialog(QDialog):
         self.web_search.setToolTip(tr("Search queries are sent to external search providers via DDGS; results are not opened automatically."))
         self.web_search.setChecked("web_search" in self.enabled_tools.get(active_profile, []))
         self.input_control = QCheckBox(tr("Allow VoxComm controller actions"))
-        self.input_control.setToolTip(tr("This profile can only trigger configured On/Off switches through the virtual VoxComm controller."))
+        self.input_control.setToolTip(tr("This profile can only trigger configured actions through the virtual VoxComm controller."))
         self.input_control.setChecked("input_control" in self.enabled_tools.get(active_profile, []))
-        self.input_action_catalog = QTableWidget(100, 4)
-        self.input_action_catalog.setHorizontalHeaderLabels([
-            tr("Button"), tr("Action (On/Off)"), tr("Keywords"), tr("Confirmation")])
-        self.input_action_catalog.verticalHeader().setVisible(False)
+        self.input_action_catalog = QPlainTextEdit(
+            self.input_action_catalogs.get(active_profile, ""))
+        self.input_action_catalog.setPlaceholderText(
+            tr("Action name => keywords|alias => ButtonN => short reply"))
         self.input_action_catalog.setMinimumHeight(280)
         self.input_action_catalog.setMaximumHeight(360)
-        self.input_action_catalog.setAlternatingRowColors(True)
-        self.input_action_catalog.setColumnWidth(1, 180)
-        self.input_action_catalog.setColumnWidth(2, 300)
-        self.input_action_catalog.horizontalHeader().setStretchLastSection(True)
-        self._load_input_action_catalog(self.input_action_catalogs.get(active_profile, ""))
         self.action_catalog_section = self._section(tr("VoxComm Controller"), [(tr("Action catalog"), self.input_action_catalog)])
         self.action_catalog_section.setVisible(self.input_control.isChecked())
         self.input_control.toggled.connect(self.action_catalog_section.setVisible)
@@ -336,6 +327,35 @@ class SettingsDialog(QDialog):
         self.model = QComboBox()
         self.model.setEditable(True)
         self.model.setCurrentText(config.llm_model)
+        self._model_overrides = dict(config.llm_model_overrides)
+        self._voice_overrides = dict(config.tts_voice_overrides)
+        self.profile_model = QComboBox()
+        self.profile_model.setEditable(True)
+        self.profile_model.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.profile_model.lineEdit().setPlaceholderText(tr("Use global model"))
+        self.profile_model.setCurrentText(self._model_overrides.get(active_profile, ""))
+        self.profile_model_refresh = self._refresh_button(tr("Load models from service"))
+        self.profile_model_refresh.clicked.connect(lambda: self._discover("models", self.profile_model_refresh))
+        profile_model_row = QHBoxLayout()
+        profile_model_row.setContentsMargins(0, 0, 0, 0)
+        profile_model_row.setSpacing(8)
+        profile_model_row.addWidget(self.profile_model, 1)
+        profile_model_row.addWidget(self.profile_model_refresh)
+        self.profile_voice = QComboBox()
+        self.profile_voice.setEditable(True)
+        self.profile_voice.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.profile_voice.lineEdit().setPlaceholderText(tr("Use global voice"))
+        self.profile_voice.setCurrentText(
+            config.tts_voice if active_profile == "__global__" else self._voice_overrides.get(active_profile, ""))
+        self.profile_voice.currentTextChanged.connect(self._update_response_language)
+        self.profile_voice_refresh = self._refresh_button(tr("Load voices from service"))
+        self.profile_voice_refresh.clicked.connect(lambda: self._discover("voices", self.profile_voice_refresh))
+        profile_voice_row = QHBoxLayout()
+        profile_voice_row.setContentsMargins(0, 0, 0, 0)
+        profile_voice_row.setSpacing(8)
+        profile_voice_row.addWidget(self.profile_voice, 1)
+        profile_voice_row.addWidget(self.profile_voice_refresh)
+        self._load_profile_overrides()
         self._thinking_setting = config.llm_thinking
         self._thinking_overrides = dict(config.llm_thinking_overrides)
         self._thinking_options: list[str] = []
@@ -356,6 +376,8 @@ class SettingsDialog(QDialog):
         self._thinking_timer.setSingleShot(True)
         self._thinking_timer.setInterval(400)
         self._thinking_timer.timeout.connect(self._lookup_thinking)
+        self.profile_model.lineEdit().editingFinished.connect(self._thinking_timer.start)
+        self.profile_model.activated.connect(lambda _: self._thinking_timer.start())
         self.thinking.activated.connect(lambda _: self._store_thinking())
         self.key = HotkeyField(config.ptt_key, clearable=True, validator=self._general_hotkey_conflict)
         self.sample_rate = QSpinBox()
@@ -377,14 +399,6 @@ class SettingsDialog(QDialog):
             self.reset_position.clicked.connect(parent.reset_overlay_position)
         else:
             self.reset_position.setEnabled(False)
-        self.voice_refresh = self._refresh_button(tr("Load voices from service"))
-        self.voice_refresh.clicked.connect(lambda: self._discover("voices"))
-        voice_row = QHBoxLayout()
-        voice_row.setContentsMargins(0, 0, 0, 0)
-        voice_row.setSpacing(10)
-        voice_row.addWidget(self.voice, 1)
-        voice_row.addWidget(self.voice_refresh)
-        self._voice_row = voice_row
         self.model_refresh = self._refresh_button(tr("Load models from service"))
         self.model_refresh.clicked.connect(lambda: self._discover("models"))
         model_row = QHBoxLayout()
@@ -416,8 +430,8 @@ class SettingsDialog(QDialog):
         right.addWidget(self.stt_section)
         self.tts_section = self._section(tr("Speech output"), [
             (tr("Provider"), self.tts_provider), (tr("URL"), self.tts), (tr("TTS language"), self.tts_language),
-            (tr("Voice language"), self.voice_language), (tr("Voice"), voice_row),
-            (tr("Response language"), self.response_language), (None, self.auto_speak),
+            (tr("Voice language"), self.voice_language), (tr("Response language"), self.response_language),
+            (None, self.auto_speak),
         ])
         right.addWidget(self.tts_section)
         right.addStretch(1)
@@ -434,7 +448,8 @@ class SettingsDialog(QDialog):
         prompt_layout.setContentsMargins(0, 0, 0, 0)
         prompt_layout.addWidget(self._section(tr("Prompt"), [
             (tr("Profile"), self.special_profile), ("", profile_row), (tr("Profile hotkey"), self.profile_hotkey),
-            (tr("Reasoning mode override"), self.profile_thinking),
+            (tr("Profile model"), profile_model_row), (tr("Profile voice"), profile_voice_row),
+            (tr("Profile reasoning"), self.profile_thinking),
             (None, self.web_search), (None, self.input_control),
             (None, self.special_prompt),
         ]), 1)
@@ -455,7 +470,7 @@ class SettingsDialog(QDialog):
             restart.connect(lambda *_: self._thinking_timer.start())
         self.tts_provider.currentIndexChanged.connect(self._update_tts_fields)
         self.stt_provider.currentIndexChanged.connect(self._update_stt_fields)
-        self.tts_language.currentIndexChanged.connect(lambda: self._update_response_language(self.voice.currentText()))
+        self.tts_language.currentIndexChanged.connect(lambda: self._update_response_language(self.profile_voice.currentText()))
         self.key_test.clicked.connect(self._test_api_key)
         self._update_stt_fields()
         self._update_tts_fields()
@@ -554,7 +569,10 @@ class SettingsDialog(QDialog):
         self._thinking_token += 1
         token = self._thinking_token
         provider, url = self.provider.currentData() or "ollama", self.llm_url.text().strip()
-        model, api_key = self.model.currentText().strip(), self.api_key.text()
+        model = (self.profile_model.currentText().strip()
+             or self._model_overrides.get(self._active_profile_name, "").strip()
+             or self.model.currentText().strip())
+        api_key = self.api_key.text()
         signals = self.discovery
 
         def run():
@@ -574,6 +592,8 @@ class SettingsDialog(QDialog):
         self._thinking_setting = self.thinking.currentData() or ""
 
     def _update_response_language(self, voice_name: str):
+        if not voice_name and self._active_profile_name != "__global__":
+            voice_name = self._global_voice
         if self.tts_provider.currentData() == "openai":
             text = self.tts_language.currentData() or self._response_language_fallback
         else:
@@ -600,7 +620,7 @@ class SettingsDialog(QDialog):
         elif not openai_mode and current == OPENAI_TTS_DEFAULT_URL:
             self.tts.setText("tcp://127.0.0.1:10200")
         self._refresh_voice_options()
-        self._update_response_language(self.voice.currentText())
+        self._update_response_language(self.profile_voice.currentText())
 
     def _update_stt_fields(self):
         whisper_mode = self.stt_provider.currentData() == "whisper.cpp"
@@ -662,6 +682,33 @@ class SettingsDialog(QDialog):
             else:
                 self.special_hotkeys.pop(self._active_profile_name, None)
 
+    def _store_profile_overrides(self):
+        model = self.profile_model.currentText().strip()
+        voice = self.profile_voice.currentText().strip()
+        if self._active_profile_name == "__global__":
+            self._global_voice = voice
+            return
+        if self._active_profile_name not in self.special_prompts:
+            return
+        if model:
+            self._model_overrides[self._active_profile_name] = model
+        else:
+            self._model_overrides.pop(self._active_profile_name, None)
+        if voice:
+            self._voice_overrides[self._active_profile_name] = voice
+        else:
+            self._voice_overrides.pop(self._active_profile_name, None)
+
+    def _load_profile_overrides(self):
+        has_profile = self._active_profile_name in self.special_prompts
+        model = self._model_overrides.get(self._active_profile_name, "")
+        voice = self._global_voice if self._active_profile_name == "__global__" else self._voice_overrides.get(self._active_profile_name, "")
+        self.profile_model.setCurrentText(model)
+        self.profile_voice.setCurrentText(voice)
+        self.profile_model.setEnabled(has_profile)
+        self.profile_voice.setEnabled(True)
+        self._update_response_language(voice)
+
     def done(self, result):
         self.key.stop_capture()
         self.profile_hotkey.stop_capture()
@@ -670,6 +717,7 @@ class SettingsDialog(QDialog):
     def _store_special_profile(self):
         self._store_enabled_tools()
         self._store_input_action_catalog()
+        self._store_profile_overrides()
         self._store_profile_thinking()
         if self._active_profile_name == "__global__":
             self._global_prompt = self.special_prompt.toPlainText().strip()
@@ -680,41 +728,14 @@ class SettingsDialog(QDialog):
     def _store_input_action_catalog(self):
         if self._active_profile_name not in self.special_prompts and self._active_profile_name != "__global__":
             return
-        entries = []
-        for row in range(self.input_action_catalog.rowCount()):
-            action, keywords, reply = [
-                (self.input_action_catalog.item(row, column).text().strip()
-                 if self.input_action_catalog.item(row, column) else "")
-                for column in range(1, 4)
-            ]
-            if action or keywords or reply:
-                entries.append(f"{action} => {keywords} => Button{row + 1} => {reply}")
-        catalog = "\n".join(entries)
+        catalog = self.input_action_catalog.toPlainText().strip()
         if catalog:
             self.input_action_catalogs[self._active_profile_name] = catalog
         else:
             self.input_action_catalogs.pop(self._active_profile_name, None)
 
     def _load_input_action_catalog(self, catalog: str):
-        self.input_action_catalog.clearContents()
-        for line in catalog.splitlines():
-            parts = [part.strip() for part in line.split("=>")]
-            if len(parts) != 4 or not parts[2].casefold().startswith("button"):
-                continue
-            try:
-                row = int(parts[2][6:]) - 1
-            except ValueError:
-                continue
-            if not 0 <= row < self.input_action_catalog.rowCount():
-                continue
-            for column, value in enumerate((parts[2], parts[0], parts[1], parts[3])):
-                self.input_action_catalog.setItem(row, column, QTableWidgetItem(value))
-            self.input_action_catalog.item(row, 0).setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-        for row in range(self.input_action_catalog.rowCount()):
-            if self.input_action_catalog.item(row, 0) is None:
-                button_item = QTableWidgetItem(f"Button{row + 1}")
-                button_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-                self.input_action_catalog.setItem(row, 0, button_item)
+        self.input_action_catalog.setPlainText(catalog)
 
     def _store_enabled_tools(self):
         if self._active_profile_name in self.special_prompts or self._active_profile_name == "__global__":
@@ -751,6 +772,8 @@ class SettingsDialog(QDialog):
         self.remove_profile.setEnabled(has_profile)
         self.profile_hotkey.setEnabled(has_profile)
         self.profile_hotkey.setValue(self.special_hotkeys.get(self._active_profile_name, "") if has_profile else "")
+        if hasattr(self, "profile_model"):
+            self._load_profile_overrides()
 
     def _refresh_special_profiles(self, selected: str):
         self.special_profile.blockSignals(True)
@@ -807,6 +830,10 @@ class SettingsDialog(QDialog):
             self.input_action_catalogs[name] = self.input_action_catalogs.pop(current)
         if current in self._thinking_overrides:
             self._thinking_overrides[name] = self._thinking_overrides.pop(current)
+        if current in self._model_overrides:
+            self._model_overrides[name] = self._model_overrides.pop(current)
+        if current in self._voice_overrides:
+            self._voice_overrides[name] = self._voice_overrides.pop(current)
         self._refresh_special_profiles(name)
 
     def _remove_special_profile(self):
@@ -823,18 +850,20 @@ class SettingsDialog(QDialog):
         self.special_hotkeys.pop(current, None)
         self.input_action_catalogs.pop(current, None)
         self._thinking_overrides.pop(current, None)
+        self._model_overrides.pop(current, None)
+        self._voice_overrides.pop(current, None)
         self._refresh_special_profiles("")
 
-    def _discover(self, kind: str):
+    def _discover(self, kind: str, button=None):
         if kind == "voices":
-            button = self.voice_refresh
+            button = button or self.profile_voice_refresh
             endpoint = self.tts.text().strip()
             if self.tts_provider.currentData() == "openai":
                 lookup = lambda: openai_tts.list_voices(endpoint)
             else:
                 lookup = lambda: list_voices(endpoint)
         else:
-            button = self.model_refresh
+            button = button or self.model_refresh
             provider = self.provider.currentData()
             endpoint = self.llm_url.text().strip() or (
                 cloud.CLOUD_BASE_URL if provider == "ollama-cloud" else "")
@@ -856,8 +885,10 @@ class SettingsDialog(QDialog):
             self.discovery_status.setText(tr("API key is valid") if not error
                                           else tr("Invalid API key: {error}", error=error))
             return
-        combo, button, label = (self.voice, self.voice_refresh, tr("voices")) if kind == "voices" else (self.model, self.model_refresh, tr("models"))
-        button.setEnabled(True)
+        buttons = (self.profile_voice_refresh,) if kind == "voices" else (self.model_refresh, self.profile_model_refresh)
+        for button in buttons:
+            button.setEnabled(True)
+        label = tr("voices") if kind == "voices" else tr("models")
         if error:
             self.discovery_status.setText(tr("Could not load {label}: {error}", label=label, error=error))
             return
@@ -871,6 +902,10 @@ class SettingsDialog(QDialog):
         if self.provider.currentData() == "ollama-cloud":
             cloud.store_models(values)
         self._fill_models(values)
+        current = self.profile_model.currentText()
+        self.profile_model.clear()
+        self.profile_model.addItems(values)
+        self.profile_model.setCurrentText(current)
         self.discovery_status.setText(tr("Found {count} {label}", count=len(values), label=label) if values
                           else tr("The service reported no {label}", label=label))
 
@@ -889,35 +924,36 @@ class SettingsDialog(QDialog):
         self.voice_language.blockSignals(False)
 
     def _refresh_voice_options(self):
-        current = self.voice.currentText()
+        current = self.profile_voice.currentText()
         if self.tts_provider.currentData() == "openai":
             voices = list(self._available_voices)
         else:
             voices = filter_voices(self._available_voices, self.voice_language.currentData() or "")
-        self.voice.blockSignals(True)
-        self.voice.clear()
-        self.voice.addItems(voices)
+        self.profile_voice.blockSignals(True)
+        self.profile_voice.clear()
+        self.profile_voice.addItems(voices)
         if current in voices or not voices:
-            self.voice.setCurrentText(current)
+            self.profile_voice.setCurrentText(current)
         else:
-            self.voice.setCurrentIndex(0)
-        self.voice.blockSignals(False)
-        self._update_response_language(self.voice.currentText())
+            self.profile_voice.setCurrentIndex(0)
+        self.profile_voice.blockSignals(False)
+        self._update_response_language(current)
 
     def apply(self, config: AppConfig) -> AppConfig:
+        self._store_special_profile()
         config.ui_language = self.ui_language.currentData() or "en"
-        config.stt_url, config.tts_url, config.tts_voice = self.stt.text(), self.tts.text(), self.voice.currentText()
+        config.stt_url, config.tts_url, config.tts_voice = self.stt.text(), self.tts.text(), self._global_voice
         config.stt_provider = self.stt_provider.currentData() or "wyoming"
         config.tts_provider = self.tts_provider.currentData() or "wyoming"
         config.tts_language = self.tts_language.currentData() or ""
         config.stt_language = self.stt_language.currentData() or "auto"
         config.voice_language = self.voice_language.currentData() or ""
+        selected_voice = self._voice_overrides.get(self._active_profile_name, self._global_voice)
         if config.tts_provider == "wyoming":
-            config.response_language = response_language_for_voice(config.tts_voice, config.response_language)
+            config.response_language = response_language_for_voice(selected_voice, config.response_language)
         elif config.tts_language:
             config.response_language = config.tts_language
         self._store_global_prompt()
-        self._store_special_profile()
         config.special_prompts = dict(self.special_prompts)
         config.special_hotkeys = {name: key for name, key in self.special_hotkeys.items() if key and name in self.special_prompts}
         allowed_tool_profiles = {"__global__", *self.special_prompts}
@@ -928,6 +964,10 @@ class SettingsDialog(QDialog):
                 if name in allowed_tool_profiles and tools}
         config.llm_thinking_overrides = {name: value for name, value in self._thinking_overrides.items()
                         if name in allowed_tool_profiles and value}
+        config.llm_model_overrides = {name: value for name, value in self._model_overrides.items()
+                if name in self.special_prompts and value}
+        config.tts_voice_overrides = {name: value for name, value in self._voice_overrides.items()
+                if name in self.special_prompts and value}
         config.active_special_prompt = self.special_profile.currentData() if self.special_profile.currentData() != "__global__" else ""
         config.global_prompt = self._global_prompt
         config.auto_speak = self.auto_speak.isChecked()
@@ -1097,6 +1137,7 @@ class Overlay(QMainWindow):
         self._request_cancellations = set()
         self._request_cancellations_lock = threading.Lock()
         self._last_response = ""
+        self._last_response_voice = ""
         self._last_text = ""
         self._gamepad_owned = False
         self._position_tracking_enabled = False
@@ -1266,6 +1307,9 @@ class Overlay(QMainWindow):
             self._hide_after_typing = True
             self._schedule_hide()
         elif kind == "pressed":
+            profile = text if text in self.config.special_prompts else self.config.active_special_prompt
+            if profile not in self.config.special_prompts:
+                profile = ""
             self._stop_speaking()
             with self._request_cancellations_lock:
                 for cancel_event in self._request_cancellations:
@@ -1278,7 +1322,7 @@ class Overlay(QMainWindow):
             self.tray_toggle_action.setText(tr("Send recording"))
             self._fade_animation.stop()
             self._text_opacity.setOpacity(1)
-            profile_note = f" · {text}" if text else ""
+            profile_note = f" · {profile}" if profile else ""
             self._set_status(tr("Recording{profile} · click again to send", profile=profile_note) if self.config.tray_mode
                              else tr("Recording{profile} · release to send", profile=profile_note))
             self.show()
@@ -1291,7 +1335,7 @@ class Overlay(QMainWindow):
                     self._request_cancellations.add(request_cancel)
                 threading.Thread(
                     target=self._capture,
-                    args=(self._capture_stop, text, request_cancel),
+                    args=(self._capture_stop, profile, request_cancel),
                     daemon=True,
                 ).start()
         elif kind == "released":
@@ -1355,24 +1399,27 @@ class Overlay(QMainWindow):
                 return
             self.events.request_message.emit(THINKING_STATUS, f"{USER_PREFIX}{text}\n", cancel_event)
             profile_name = profile if profile in self.config.special_prompts else ""
+            profile_model = self.config.llm_model_overrides.get(profile_name, self.config.llm_model)
+            profile_voice = self.config.tts_voice_overrides.get(profile_name, self.config.tts_voice)
             enabled_tools = self.config.enabled_tools.get(profile_name or "__global__", [])
             # Mit Websuche kann die Antwort nachträglich ersetzt werden, daher erst nach der fertigen Antwort sprechen.
             speech = None
             if self.config.auto_speak and "web_search" not in enabled_tools:
                 speech = SentenceStream(
-                    cancel_event, on_first=lambda: self.events.speak.emit(speech, cancel_event))
+                    cancel_event, on_first=lambda: self.events.speak.emit(speech, cancel_event, profile_voice))
             streamed = []
             try:
                 answer = chat(
                     self.config.llm_provider,
                     self.config.llm_url,
-                    self.config.llm_model,
+                    profile_model,
                     text,
                     system_prompt=build_system_prompt(
-                        piper_voice=self.config.tts_voice if self.config.tts_provider == "wyoming" else "",
+                        piper_voice=profile_voice if self.config.tts_provider == "wyoming" else "",
                         special_prompt_name=profile_name,
                         special_prompt=self.config.special_prompts.get(profile_name, ""),
-                        fallback_language=self.config.response_language,
+                        fallback_language=(response_language_for_voice(profile_voice, self.config.response_language)
+                                           if self.config.tts_provider == "wyoming" else self.config.response_language),
                         global_prompt=self.config.global_prompt,
                     ),
                     enabled_tools=enabled_tools,
@@ -1391,11 +1438,12 @@ class Overlay(QMainWindow):
                     speech.finish()
             if cancel_event.is_set():
                 return
+            self._last_response_voice = profile_voice
             self.events.request_message.emit(
                 tr("Ready · response generated locally"), f"{USER_PREFIX}{text}{AI_MARKER}{answer}", cancel_event
             )
             if self.config.auto_speak and speech is None and not cancel_event.is_set():
-                self.events.speak.emit(answer, cancel_event)
+                self.events.speak.emit(answer, cancel_event, profile_voice)
         except Exception as error:
             if not cancel_event.is_set():
                 self.events.request_message.emit(tr("Error · {error}", error=error), "", cancel_event)
@@ -1550,9 +1598,9 @@ class Overlay(QMainWindow):
             self._show_message(tr("No response to read yet"), "")
             return
         self._show_message(SPEAKING_STATUS, self._last_text)
-        self._start_speak(self._last_response)
+        self._start_speak(self._last_response, voice_override=self._last_response_voice)
 
-    def _start_speak(self, source, cancel_event=None):
+    def _start_speak(self, source, cancel_event=None, voice_override=""):
         if cancel_event is not None and cancel_event.is_set():
             return
         self._stop_speaking()
@@ -1563,24 +1611,25 @@ class Overlay(QMainWindow):
         self._hide_timer.stop()
         self._fade_animation.stop()
         self._text_opacity.setOpacity(1)
-        threading.Thread(target=self._speak, args=(source, cancel_event), daemon=True).start()
+        threading.Thread(target=self._speak, args=(source, cancel_event, voice_override), daemon=True).start()
 
     def _stop_speaking(self):
         if self._speech_cancel is not None:
             self._speech_cancel.set()
 
-    def _speech_chunks(self, sentences):
+    def _speech_chunks(self, sentences, voice_override=""):
+        voice = voice_override or self.config.tts_voice
         for sentence in sentences:
             if self.config.tts_provider == "openai":
                 yield from openai_tts.speak_stream(
-                    sentence, self.config.tts_url, self.config.tts_voice, self.config.tts_language)
+                    sentence, self.config.tts_url, voice, self.config.tts_language)
             else:
-                yield from speak_stream_sync(sentence, self.config.tts_url, self.config.tts_voice)
+                yield from speak_stream_sync(sentence, self.config.tts_url, voice)
 
-    def _speak(self, source, cancel_event: threading.Event):
+    def _speak(self, source, cancel_event: threading.Event, voice_override=""):
         try:
             sentences = [source] if isinstance(source, str) else source
-            play_stream(prefetch(self._speech_chunks(sentences), cancel_event), cancel_event)
+            play_stream(prefetch(self._speech_chunks(sentences, voice_override), cancel_event), cancel_event)
             if not cancel_event.is_set():
                 self.events.request_message.emit(tr("Ready · press PTT to speak"), "", cancel_event)
         except Exception as error:

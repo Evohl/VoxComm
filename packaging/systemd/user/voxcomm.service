@@ -5,8 +5,8 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/StudioProjects/SC-AI-Copilot
-ExecStart=%h/StudioProjects/SC-AI-Copilot/.venv/bin/voxcomm
+WorkingDirectory=%h/StudioProjects/VoxComm
+ExecStart=%h/StudioProjects/VoxComm/.venv/bin/voxcomm
 Restart=on-failure
 RestartSec=3
 KillSignal=SIGINT

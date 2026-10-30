@@ -31,9 +31,9 @@ class ActionCatalogTests(unittest.TestCase):
 
     def test_rejects_malformed_or_unsafe_catalog_entries(self):
         with self.assertRaises(ValueError):
-            parse_action_catalog("Flight Systems On => flight ready => Button1 => ready")
+            parse_action_catalog("Flight Systems On => flight ready => Button1")
 
-    def test_on_and_off_switches_must_use_distinct_buttons(self):
+    def test_actions_must_use_distinct_buttons(self):
         catalog = (
             "Flight Systems On => flight ready => Button1 => enabled\n"
             "Flight Systems Off => flight systems off => Button1 => disabled"
@@ -42,9 +42,17 @@ class ActionCatalogTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "own button"):
             parse_action_catalog(catalog)
         with self.assertRaises(ValueError):
-            parse_action_catalog("Close Game => close game => Button1 => close")
-        with self.assertRaises(ValueError):
-            parse_action_catalog("Flight Systems On => flight ready => Button1 => ready")
+            parse_action_catalog("Flight Systems On => |ready => Button1 => ready")
+
+    def test_single_actions_without_on_off_pairs_are_valid(self):
+        catalog = (
+            "Self Destruct => self destruct|destroy ship => Button11 => Self destruct.\n"
+            "Set Mining Operator Mode => mining mode|switch to mining => Button1 => Mining mode."
+        )
+
+        actions = parse_action_catalog(catalog)
+        self.assertEqual(len(actions), 2)
+        self.assertEqual(match_action(catalog, "switch to mining")['button'], "Button1")
 
     def test_conflicting_equal_length_keywords_are_ambiguous(self):
         catalog = (

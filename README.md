@@ -50,7 +50,7 @@ This writes `voxcomm.desktop` and the VoxComm icon beneath `${XDG_DATA_HOME:-~/.
 
 ### systemd user service
 
-To start VoxComm automatically with the graphical user session, save this unit as `packaging/systemd/user/voxcomm.service`. The paths below match a checkout at `~/StudioProjects/SC-AI-Copilot`; adjust `WorkingDirectory` and `ExecStart` if yours is elsewhere.
+To start VoxComm automatically with the graphical user session, use `packaging/systemd/user/voxcomm.service`. The paths below match a checkout at `~/StudioProjects/VoxComm`; adjust `WorkingDirectory` and `ExecStart` if yours is elsewhere.
 
 ```ini
 [Unit]
@@ -60,8 +60,8 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/StudioProjects/SC-AI-Copilot
-ExecStart=%h/StudioProjects/SC-AI-Copilot/.venv/bin/voxcomm
+WorkingDirectory=%h/StudioProjects/VoxComm
+ExecStart=%h/StudioProjects/VoxComm/.venv/bin/voxcomm
 Restart=on-failure
 RestartSec=3
 KillSignal=SIGINT
@@ -138,7 +138,7 @@ curl --fail --show-error http://127.0.0.1:8097/v1/audio/voices           # OpenA
 curl --fail --show-error -H "Authorization: Bearer $OLLAMA_API_KEY" https://ollama.com/api/tags
 ```
 
-A reachable port does not guarantee a healthy service or a configured model/voice. In **Settings**, use the refresh buttons next to **Stimme** and **Modell**, check the selected microphone, and perform a short push-to-talk test. Speech output is optional and can be left disabled. VoxComm does not save microphone audio by default.
+A reachable port does not guarantee a healthy service or a configured model/voice. In **Settings**, use the refresh buttons next to **Modell** and the profile voice selector, check the selected microphone, and perform a short push-to-talk test. Speech output is optional and can be left disabled. VoxComm does not save microphone audio by default.
 
 ## Current behavior
 
@@ -158,18 +158,20 @@ The interface language can be selected in **Settings** and takes effect after re
 
 An OpenAI-compatible TTS service such as `qwentts.cpp` commonly runs on `http://127.0.0.1:8097` and returns 24 kHz mono WAV. Voice names of such services (for example `data`) carry no language prefix, so the **TTS-Sprache** selector is sent to the service directly and also becomes the response language; for Wyoming/Piper the response language is derived from the selected Piper voice instead.
 
-Edit **Global** to change the always-active base prompt. Specialty profiles add task-specific context to Global. Selecting a profile and using the general hotkey uses that selected profile; a profile-specific hotkey always uses its bound profile. Profile selection is manual; process-based automatic profile selection is not implemented. **Erkennungssprache** sets the language passed to each recognition request (Wyoming `transcribe` or the whisper.cpp `language` field; *Automatisch* forwards `auto`). **Read responses aloud** enables automatic speech output. Replies are spoken sentence by sentence while the model is still writing (except in profiles with web search, which speak the finished answer). **Denkmodus** (Ollama and Ollama Cloud) offers exactly the thinking controls the selected model reports through `/api/show` (for example *Aus*/*An*, or *Niedrig*/*Mittel*/*Hoch*) and is disabled for models without such controls; *Modell-Standard* sends nothing. For reasoning models, *Aus* usually cuts the wait before the first word from tens of seconds to well under one.
+Choose the response voice in **Prompt Settings**. **Global** sets the fallback voice; each specialty profile can select its own voice, and a blank profile voice uses the Global selection. Model and voice dropdowns have refresh buttons; custom model and voice names can also be typed.
+
+Edit **Global** to change the always-active base prompt. Specialty profiles add task-specific context to Global. Selecting a profile and using the general hotkey uses that selected profile; a profile-specific hotkey always uses its bound profile. Profile selection is manual; process-based automatic profile selection is not implemented. Each specialty profile can override the global **Language model** and **Voice**; leave either override empty to use its global setting. **Erkennungssprache** sets the language passed to each recognition request (Wyoming `transcribe` or the whisper.cpp `language` field; *Automatisch* forwards `auto`). **Read responses aloud** enables automatic speech output. Replies are spoken sentence by sentence while the model is still writing (except in profiles with web search, which speak the finished answer). **Denkmodus** (Ollama and Ollama Cloud) offers exactly the thinking controls the selected model reports through `/api/show` (for example *Aus*/*An*, or *Niedrig*/*Mittel*/*Hoch*) and is disabled for models without such controls; *Modell-Standard* sends nothing. For reasoning models, *Aus* usually cuts the wait before the first word from tens of seconds to well under one.
 
 The **Web search** permission is off by default and is configured independently for Global and each specialty profile. When enabled and the provider is `ollama-cloud`, searches run through Ollama's `/api/web_search`; with any other provider they use DDGS. Either way the recognized user request and generated search query leave the machine, results are limited to five short snippets, and they reach the model as untrusted reference data — the boundary described under [Tool-use boundaries](#tool-use-boundaries) is unchanged. Search results are limited to five short snippets and are passed to the model as untrusted reference data. VoxComm does not automatically open result URLs. Time-sensitive queries (for example, weather tomorrow or today's headlines) are searched immediately using the local system date; if the model says it does not know, VoxComm searches once and asks it to answer from the results. If the model still cannot answer, VoxComm displays the results with their source links.
 
-The **VoxComm controller actions** permission is off by default and is configured independently for Global and every specialty profile. When enabled, the model can select only a named action from that profile's On/Off catalog; it cannot send keyboard input or invent button numbers. Each action sends one tap to the virtual VoxComm controller and reports which configured button was sent, without claiming that the game state changed. Catalog lines use `Action Name On/Off => keyword|alias => ButtonN => short reply`; every action must have a matching On and Off entry. For example:
+The **VoxComm controller actions** permission is off by default and is configured independently for Global and every specialty profile. When enabled, the model can select only a named action from that profile's catalog; it cannot send keyboard input or invent button numbers. Each action sends one tap to the virtual VoxComm controller. Catalog lines use `Action Name => keyword|alias => ButtonN => short reply`. Use separate On and Off lines for explicit state-setting controls; single lines are valid for toggles and one-shot actions:
 
 ```text
 Flight Systems On => flight ready|systeme ein => Button1 => Flight Systems eingeschaltet
 Flight Systems Off => flight systems off|systeme aus => Button2 => Flight Systems ausgeschaltet
 ```
 
-Existing keyboard-style catalog entries must be replaced with this controller format. The feature requires the optional `evdev` input dependency, a running virtual controller, and write access to `/dev/uinput`.
+Existing keyboard-style catalog entries must be replaced with this controller format. VoxComm sends a short tap, not a held button; Star Citizen bindings that explicitly require a long press may therefore not work as expected. The feature requires the optional `evdev` input dependency, a running virtual controller, and write access to `/dev/uinput`.
 
 ### Virtual button controller
 

@@ -29,7 +29,9 @@ class ConfigTests(unittest.TestCase):
                     "Star Citizen": "flight ready|systeme bereit => RIGHTALT + R => Flight ready",
                 },
                 active_special_prompt="Star Citizen",
+                llm_model_overrides={"Star Citizen": "qwen3:8b"},
                 llm_thinking_overrides={"__global__": "low", "Star Citizen": "high"},
+                tts_voice_overrides={"Star Citizen": "de_DE-thorsten-high"},
             )
             save_config(original, path)
             self.assertEqual(load_config(path), original)

@@ -10,7 +10,7 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFrame, QLabel, QLineEdit, QMessageBox, QPushButton, QSystemTrayIcon,
-    QTableWidgetItem, QToolButton, QWidget,
+    QToolButton, QWidget,
 )
 
 from voxcomm.app import (
@@ -35,11 +35,31 @@ class ApplicationLifecycleTests(unittest.TestCase):
     def test_settings_refresh_rows_have_spacing_and_numeric_controls_are_compact(self):
         dialog = SettingsDialog(AppConfig())
 
-        self.assertEqual(dialog._voice_row.spacing(), 10)
         self.assertEqual(dialog._model_row.spacing(), 10)
+        self.assertEqual(dialog.profile_model_refresh.width(), 33)
+        self.assertEqual(dialog.profile_voice_refresh.width(), 33)
         self.assertEqual(dialog.sample_rate.height(), 30)
         self.assertEqual(dialog.overlay_hide_seconds.height(), 30)
 
+        dialog.deleteLater()
+
+    def test_controller_action_catalog_is_a_preserved_multiline_text_input(self):
+        config = AppConfig(
+            special_prompts={"Star Citizen": "Ship operations"},
+            input_action_catalogs={"Star Citizen": "Self Destruct => self destruct => Button11 => Ausgeloest."},
+            active_special_prompt="Star Citizen",
+        )
+        dialog = SettingsDialog(config)
+
+        self.assertEqual(
+            dialog.input_action_catalog.toPlainText(),
+            "Self Destruct => self destruct => Button11 => Ausgeloest.",
+        )
+        dialog.input_action_catalog.appendPlainText(
+            "Mining Mode => mining mode => Button1 => Bergbau-Modus."
+        )
+        dialog._store_input_action_catalog()
+        self.assertIn("Button1", dialog.input_action_catalogs["Star Citizen"])
         dialog.deleteLater()
 
     def test_accepting_dialog_does_not_quit_tool_window_app(self):
@@ -268,7 +288,9 @@ class ApplicationLifecycleTests(unittest.TestCase):
     def test_profile_hotkeys_are_stored_renamed_removed_and_conflict_checked(self):
         app = QApplication.instance() or QApplication([])
         config = AppConfig(ptt_key="F9", special_prompts={"Star Citizen": "a", "Elite": "b"},
-                           special_hotkeys={"Elite": "f11", "Gone": "f12"})
+                   special_hotkeys={"Elite": "f11", "Gone": "f12"},
+                   llm_model_overrides={"Star Citizen": "ship-model"},
+                   tts_voice_overrides={"Star Citizen": "ship-voice"})
         dialog = SettingsDialog(config)
 
         self.assertFalse(dialog.profile_hotkey.isEnabled())
@@ -293,11 +315,15 @@ class ApplicationLifecycleTests(unittest.TestCase):
             dialog._rename_special_profile()
         self.assertEqual(dialog.special_hotkeys["SC"], "f10")
         self.assertNotIn("Star Citizen", dialog.special_hotkeys)
+        self.assertEqual(dialog._model_overrides["SC"], "ship-model")
+        self.assertEqual(dialog._voice_overrides["SC"], "ship-voice")
         self.assertEqual(dialog.profile_hotkey.value(), "f10")
 
         with patch("voxcomm.app.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
             dialog._remove_special_profile()
         self.assertNotIn("SC", dialog.special_hotkeys)
+        self.assertNotIn("SC", dialog._model_overrides)
+        self.assertNotIn("SC", dialog._voice_overrides)
 
         dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Elite"))
         dialog.profile_hotkey.clear_button.click()
@@ -316,6 +342,11 @@ class ApplicationLifecycleTests(unittest.TestCase):
         config = AppConfig(
             special_prompts={"Star Citizen": "Ship context"},
             special_hotkeys={"Star Citizen": "f10"},
+            llm_model="global-model",
+            llm_model_overrides={"Star Citizen": "ship-model"},
+            tts_voice="global-voice",
+            tts_voice_overrides={"Star Citizen": "de_DE-ship"},
+            llm_thinking_overrides={"Star Citizen": "high"},
             active_special_prompt="Star Citizen",
             enabled_tools={"__global__": ["web_search"]},
         )
@@ -339,17 +370,38 @@ class ApplicationLifecycleTests(unittest.TestCase):
             with (
                 patch("voxcomm.app.record_until_released", return_value=b"\0" * 9600),
                 patch("voxcomm.app.transcribe_sync", return_value="Hallo"),
-                patch("voxcomm.app.chat", side_effect=lambda *a, **k: requests.append(k) or "Antwort"),
+                patch("voxcomm.app.chat", side_effect=lambda *a, **k: requests.append((a, k)) or "Antwort"),
             ):
                 overlay._capture(threading.Event(), "Star Citizen")
+                self.assertEqual(overlay._last_response_voice, "de_DE-ship")
                 overlay._capture(threading.Event(), "")
-            self.assertIn("Ship context", requests[0]["system_prompt"])
-            self.assertEqual(requests[0]["enabled_tools"], [])
-            self.assertNotIn("Ship context", requests[1]["system_prompt"])
-            self.assertEqual(requests[1]["enabled_tools"], ["web_search"])
+            self.assertIn("Ship context", requests[0][1]["system_prompt"])
+            self.assertEqual(requests[0][0][2], "ship-model")
+            self.assertEqual(requests[0][1]["thinking"], "high")
+            self.assertIn("German", requests[0][1]["system_prompt"])
+            self.assertEqual(requests[0][1]["enabled_tools"], [])
+            self.assertNotIn("Ship context", requests[1][1]["system_prompt"])
+            self.assertEqual(requests[1][1]["enabled_tools"], ["web_search"])
             overlay.listener.stop()
             overlay.tray_icon.hide()
             overlay.deleteLater()
+
+    def test_general_ptt_uses_active_prompt_profile(self):
+        app = QApplication.instance() or QApplication([])
+        config = AppConfig(
+            special_prompts={"Star Citizen": "Ship context"},
+            active_special_prompt="Star Citizen",
+        )
+        with patch("voxcomm.app.load_config", return_value=config), patch("voxcomm.app.PttListener"):
+            with patch("voxcomm.app.threading.Thread") as thread_class:
+                overlay = Overlay()
+
+                overlay._ptt_event("pressed", "")
+
+                self.assertEqual(thread_class.call_args.kwargs["args"][1], "Star Citizen")
+                overlay.listener.stop()
+                overlay.tray_icon.hide()
+                overlay.deleteLater()
 
     def test_short_ptt_capture_is_discarded_before_transcription(self):
         app = QApplication.instance() or QApplication([])
@@ -789,7 +841,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
         )
         sections = dialog.findChildren(QFrame, "section")
         self.assertEqual(len(sections), 6)
-        self.assertEqual(dialog.input_action_catalog.rowCount(), 100)
+        self.assertEqual(dialog.input_action_catalog.toPlainText(), "")
         self.assertTrue(dialog.action_catalog_section.isHidden())
         self.assertIn(system_accent().name(), dialog.styleSheet())
         self.assertEqual(dialog.findChild(QPushButton, "primary").text(), "Save")
@@ -864,7 +916,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
         app = QApplication.instance() or QApplication([])
         dialog = SettingsDialog(AppConfig())
 
-        for button in (dialog.voice_refresh, dialog.model_refresh):
+        for button in (dialog.profile_voice_refresh, dialog.profile_model_refresh, dialog.model_refresh):
             self.assertIsInstance(button, QToolButton)
             self.assertFalse(button.icon().isNull())
             self.assertEqual(button.text(), "")
@@ -966,19 +1018,15 @@ class ApplicationLifecycleTests(unittest.TestCase):
     def test_action_catalog_is_saved_per_profile(self):
         app = QApplication.instance() or QApplication([])
         dialog = SettingsDialog(AppConfig(special_prompts={"Star Citizen": "Ship context"}))
-        dialog.input_action_catalog.setItem(0, 1, QTableWidgetItem("Flight Systems On"))
-        dialog.input_action_catalog.setItem(0, 2, QTableWidgetItem("flight ready"))
-        dialog.input_action_catalog.setItem(0, 3, QTableWidgetItem("Flight Systems on"))
-        dialog.input_action_catalog.setItem(1, 1, QTableWidgetItem("Flight Systems Off"))
-        dialog.input_action_catalog.setItem(1, 2, QTableWidgetItem("flight systems off"))
-        dialog.input_action_catalog.setItem(1, 3, QTableWidgetItem("Flight Systems off"))
+        dialog.input_action_catalog.setPlainText(
+            "Flight Systems On => flight ready => Button1 => Flight Systems on\n"
+            "Flight Systems Off => flight systems off => Button2 => Flight Systems off"
+        )
         dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Star Citizen"))
-        dialog.input_action_catalog.setItem(2, 1, QTableWidgetItem("Landing Gear On"))
-        dialog.input_action_catalog.setItem(2, 2, QTableWidgetItem("gear down"))
-        dialog.input_action_catalog.setItem(2, 3, QTableWidgetItem("Gear extended"))
-        dialog.input_action_catalog.setItem(3, 1, QTableWidgetItem("Landing Gear Off"))
-        dialog.input_action_catalog.setItem(3, 2, QTableWidgetItem("gear up"))
-        dialog.input_action_catalog.setItem(3, 3, QTableWidgetItem("Gear retracted"))
+        dialog.input_action_catalog.setPlainText(
+            "Landing Gear On => gear down => Button3 => Gear extended\n"
+            "Landing Gear Off => gear up => Button4 => Gear retracted"
+        )
 
         updated = dialog.apply(AppConfig(special_prompts={"Star Citizen": "Ship context"}))
 
@@ -1009,6 +1057,55 @@ class ApplicationLifecycleTests(unittest.TestCase):
         self.assertEqual(updated.llm_thinking_overrides, {"__global__": "low", "Star Citizen": "high"})
         dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("__global__"))
         self.assertEqual(dialog.profile_thinking.currentData(), "low")
+
+    def test_model_and_voice_overrides_are_saved_per_prompt_profile(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig(
+            llm_model="global-model",
+            tts_voice="global-voice",
+            special_prompts={"Star Citizen": "Ship context", "Work": "Work context"},
+        ))
+        self.assertFalse(dialog.profile_model.isEnabled())
+        self.assertTrue(dialog.profile_voice.isEnabled())
+        self.assertEqual(dialog.profile_voice.currentText(), "global-voice")
+        dialog.profile_voice.setCurrentText("de_DE-global")
+
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Star Citizen"))
+        self.assertTrue(dialog.profile_model.isEnabled())
+        self.assertTrue(dialog.profile_voice.isEnabled())
+        dialog.profile_model.setCurrentText("qwen3:8b")
+        dialog.profile_voice.setCurrentText("de_DE-thorsten-high")
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Work"))
+        self.assertEqual(dialog.profile_model.currentText(), "")
+        self.assertEqual(dialog.profile_voice.currentText(), "")
+        dialog.profile_model.setCurrentText("llama3.2")
+        updated = dialog.apply(AppConfig(
+            llm_model="global-model",
+            tts_voice="global-voice",
+            special_prompts={"Star Citizen": "Ship context", "Work": "Work context"},
+        ))
+
+        self.assertEqual(updated.tts_voice, "de_DE-global")
+        self.assertEqual(updated.llm_model_overrides, {
+            "Star Citizen": "qwen3:8b",
+            "Work": "llama3.2",
+        })
+        self.assertEqual(updated.tts_voice_overrides, {
+            "Star Citizen": "de_DE-thorsten-high",
+        })
+
+    def test_profile_voice_override_is_used_for_speech_output(self):
+        app = QApplication.instance() or QApplication([])
+        with patch("voxcomm.app.load_config", return_value=AppConfig(tts_voice="global-voice")):
+            with patch("voxcomm.app.PttListener"):
+                overlay = Overlay()
+                with patch("voxcomm.app.speak_stream_sync", return_value=[b"audio"]) as speak:
+                    self.assertEqual(list(overlay._speech_chunks(["Hallo"], "profile-voice")), [b"audio"])
+
+                speak.assert_called_once_with("Hallo", "tcp://127.0.0.1:10200", "profile-voice")
+                overlay.listener.stop()
+                overlay.tray_icon.hide()
+                overlay.deleteLater()
 
 
 class ProviderSelectionTests(unittest.TestCase):
@@ -1060,7 +1157,7 @@ class ProviderSelectionTests(unittest.TestCase):
         dialog.tts_language.setCurrentIndex(dialog.tts_language.findData("English"))
         dialog.provider.setCurrentIndex(dialog.provider.findData("ollama-cloud"))
         dialog.api_key.setText(" secret ")
-        dialog.voice.setCurrentText("data")
+        dialog.profile_voice.setCurrentText("data")
 
         updated = dialog.apply(AppConfig())
 
@@ -1137,7 +1234,7 @@ class ProviderSelectionTests(unittest.TestCase):
 
         dialog._refresh_voice_options()
 
-        self.assertEqual(dialog.voice.currentText(), "data")
+        self.assertEqual(dialog.profile_voice.currentText(), "data")
 
     def test_overlay_dispatches_to_local_backends(self):
         app = QApplication.instance() or QApplication([])
@@ -1274,7 +1371,7 @@ class ProviderSelectionTests(unittest.TestCase):
                     break
                 QTest.qWait(10)
 
-        lookup.assert_called_once_with("ollama", "http://h:11434", "gpt-oss", "")
+        lookup.assert_any_call("ollama", "http://h:11434", "gpt-oss", "")
         self.assertEqual(received, [(dialog._thinking_token, ["low", "medium", "high"])])
         dialog.deleteLater()
 
