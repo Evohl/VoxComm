@@ -26,3 +26,6 @@ voxcomm-gamepad = "voxcomm.gamepad:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+voxcomm = ["locales/*.json"]

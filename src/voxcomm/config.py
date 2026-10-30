@@ -12,6 +12,7 @@ DEFAULT_GLOBAL_PROMPT = "Erfinde keine Fakten, Ausgaben, Quellen oder Systemzust
 
 @dataclass
 class AppConfig:
+    ui_language: str = "en"
     stt_url: str = "tcp://127.0.0.1:10300"
     stt_provider: str = "wyoming"
     stt_language: str = "de"

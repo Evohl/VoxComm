@@ -144,6 +144,8 @@ A reachable port does not guarantee a healthy service or a configured model/voic
 
 Open **Settings** from the overlay or tray. Each section picks its own interface:
 
+The interface language can be selected in **Settings** and takes effect after restarting VoxComm. English is the source language; additional translations live in `src/voxcomm/locales/<language>.json` and use the English message text as the key. Add a catalog and register its language in `voxcomm.i18n.SUPPORTED_LANGUAGES` to add another locale.
+
 | Section | Interface | URL |
 | --- | --- | --- |
 | Spracherkennung | Wyoming (default) | `tcp://host:port`, e.g. `tcp://127.0.0.1:10300` |

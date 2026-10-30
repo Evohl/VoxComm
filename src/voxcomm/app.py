@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 from voxcomm.audio import play_stream, prefetch, record_until_released, save_wav
 from voxcomm.branding import APP_ID, APP_NAME, install_launcher, make_app_icon
 from voxcomm.config import AppConfig, load_config, save_config
+from voxcomm.i18n import SUPPORTED_LANGUAGES, set_language, tr
 from voxcomm.mangohud import publish_status
 from voxcomm.providers import cloud, openai_tts, whisper_cpp
 from voxcomm.providers.llm import chat, list_models, thinking_options
@@ -34,15 +35,15 @@ TYPE_INTERVAL_MS = 24
 MIN_PTT_DURATION_MS = 200
 TRANSCRIPT_WIDTH = 480
 TRANSCRIPT_MAX_HEIGHT = 200
-THINKING_STATUS = "Denke nach …"
-SPEAKING_STATUS = "Spricht …"
+THINKING_STATUS = "Thinking …"
+SPEAKING_STATUS = "Speaking …"
 WHISPER_CPP_DEFAULT_URL = "http://127.0.0.1:8081"
 OPENAI_TTS_DEFAULT_URL = "http://127.0.0.1:8097"
 SETTINGS_LABEL_WIDTH = 140
 SETTINGS_ICON_BUTTON = 33
-THINKING_LABELS = {"off": "Aus", "on": "An", "low": "Niedrig", "medium": "Mittel", "high": "Hoch"}
-USER_PREFIX = "Du: "
-AI_LABEL = "A.I.: "
+THINKING_LABELS = {"off": "Off", "on": "On", "low": "Low", "medium": "Medium", "high": "High"}
+USER_PREFIX = "You: "
+AI_LABEL = "AI: "
 AI_MARKER = "\n" + AI_LABEL
 
 
@@ -68,6 +69,7 @@ class Events(QObject):
     ptt = Signal(str, str)
     message = Signal(str, str)
     request_message = Signal(str, str, object)
+    activity = Signal(str, object)
     discovery = Signal(str, object, str)
     thinking = Signal(int, object)
     speak = Signal(object, object)
@@ -106,7 +108,7 @@ class HotkeyField(QWidget):
         self._signals.failed.connect(self._fail)
         self.button = _CaptureButton()
         self.button.setAutoDefault(False)
-        self.button.setToolTip("Klicken und eine Taste oder einen Controller-Button drücken. Esc bricht ab.")
+        self.button.setToolTip(tr("Click, then press a key or controller button. Press Esc to cancel."))
         self.button.clicked.connect(self._toggle_capture)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -118,7 +120,7 @@ class HotkeyField(QWidget):
             self.clear_button.setObjectName("iconButton")
             self.clear_button.setText("✕")
             self.clear_button.setFixedSize(SETTINGS_ICON_BUTTON, SETTINGS_ICON_BUTTON)
-            self.clear_button.setToolTip("Hotkey entfernen")
+            self.clear_button.setToolTip(tr("Remove hotkey"))
             self.clear_button.clicked.connect(lambda: self._apply(""))
             layout.addWidget(self.clear_button)
         self._render()
@@ -145,9 +147,9 @@ class HotkeyField(QWidget):
 
     def _render(self) -> None:
         if self._stop is not None:
-            self.button.setText("Taste / Button drücken …")
+            self.button.setText(tr("Press a key / button …"))
         else:
-            self.button.setText(self._value.upper() if self._value else "Nicht belegt")
+            self.button.setText(self._value.upper() if self._value else tr("Not assigned"))
         if self.clear_button is not None:
             self.clear_button.setEnabled(bool(self._value))
 
@@ -212,8 +214,13 @@ class HotkeyField(QWidget):
 class SettingsDialog(QDialog):
     def __init__(self, config: AppConfig, parent=None):
         super().__init__(parent)
+        set_language(config.ui_language)
         self._response_language_fallback = config.response_language
-        self.setWindowTitle(f"Einstellungen · {APP_NAME}")
+        self.ui_language = QComboBox()
+        for code, label in SUPPORTED_LANGUAGES.items():
+            self.ui_language.addItem(label, code)
+        self.ui_language.setCurrentIndex(max(self.ui_language.findData(config.ui_language), 0))
+        self.setWindowTitle(tr("Settings · {name}", name=APP_NAME))
         self.setMinimumWidth(880)
         self.setStyleSheet(dialog_stylesheet(system_accent(), system_surface(), system_text()))
         self.discovery = Events()
@@ -221,28 +228,28 @@ class SettingsDialog(QDialog):
         self.discovery.thinking.connect(self._apply_thinking_options)
         self.stt = QLineEdit(config.stt_url)
         self.stt_provider = QComboBox()
-        self.stt_provider.addItem("Wyoming", "wyoming")
-        self.stt_provider.addItem("whisper.cpp-Server", "whisper.cpp")
+        self.stt_provider.addItem(tr("Wyoming"), "wyoming")
+        self.stt_provider.addItem(tr("whisper.cpp server"), "whisper.cpp")
         self.stt_provider.setCurrentIndex(max(self.stt_provider.findData(config.stt_provider), 0))
         self.stt_language = QComboBox()
-        self.stt_language.addItem("Automatisch", "auto")
+        self.stt_language.addItem(tr("Automatic"), "auto")
         for code, label in LANGUAGE_LABELS.items():
             self.stt_language.addItem(f"{label} ({code})", code)
         stt_language_index = self.stt_language.findData(config.stt_language)
         self.stt_language.setCurrentIndex(max(stt_language_index, 0))
         self.tts = QLineEdit(config.tts_url)
         self.tts_provider = QComboBox()
-        self.tts_provider.addItem("Wyoming Piper", "wyoming")
-        self.tts_provider.addItem("OpenAI-kompatibel (qwentts u. a.)", "openai")
+        self.tts_provider.addItem(tr("Wyoming Piper"), "wyoming")
+        self.tts_provider.addItem(tr("OpenAI-compatible (qwentts and others)"), "openai")
         self.tts_provider.setCurrentIndex(max(self.tts_provider.findData(config.tts_provider), 0))
         self.tts_language = QComboBox()
-        self.tts_language.addItem("Dienst-Standard", "")
+        self.tts_language.addItem(tr("Service default"), "")
         for label in VOICE_LANGUAGE_NAMES.values():
             self.tts_language.addItem(label, label)
         self.tts_language.setCurrentIndex(max(self.tts_language.findData(config.tts_language), 0))
         self._available_voices: list[str] = []
         self.voice_language = QComboBox()
-        self.voice_language.addItem("Alle Sprachen", "")
+        self.voice_language.addItem(tr("All languages"), "")
         for code, label in LANGUAGE_LABELS.items():
             self.voice_language.addItem(f"{label} ({code})", code)
         language_index = self.voice_language.findData(config.voice_language)
@@ -261,25 +268,26 @@ class SettingsDialog(QDialog):
         self.enabled_tools = {name: [tool for tool in tools if tool in {"web_search", "input_control"}]
                       for name, tools in config.enabled_tools.items()}
         self.profile_hotkey = HotkeyField("", clearable=True, validator=self._profile_hotkey_conflict)
-        self.profile_hotkey.setToolTip("Mit diesem Hotkey wird zusätzlich zu Global dieses Profil verwendet")
+        self.profile_hotkey.setToolTip(tr("This hotkey uses this profile in addition to Global"))
         self.profile_hotkey.changed.connect(self._store_profile_hotkey)
         self._global_prompt = config.global_prompt
         self.special_profile = QComboBox()
-        self.special_profile.addItem("Global", "__global__")
+        self.special_profile.addItem(tr("Global"), "__global__")
         for name in sorted(self.special_prompts, key=str.casefold):
             self.special_profile.addItem(name, name)
         active_profile = config.active_special_prompt if config.active_special_prompt in self.special_prompts else "__global__"
         self.special_profile.setCurrentIndex(max(self.special_profile.findData(active_profile), 0))
         self._active_profile_name = active_profile
         self.special_profile.currentIndexChanged.connect(self._select_special_profile)
-        self.web_search = QCheckBox("Websuche erlauben")
-        self.web_search.setToolTip("Suchanfragen werden über DDGS an externe Suchanbieter gesendet; Treffer werden nicht automatisch geöffnet.")
+        self.web_search = QCheckBox(tr("Allow web search"))
+        self.web_search.setToolTip(tr("Search queries are sent to external search providers via DDGS; results are not opened automatically."))
         self.web_search.setChecked("web_search" in self.enabled_tools.get(active_profile, []))
-        self.input_control = QCheckBox("VoxComm-Controlleraktionen erlauben")
-        self.input_control.setToolTip("Erlaubt diesem Profil ausschließlich konfigurierte On/Off-Schalter über den virtuellen VoxComm-Controller.")
+        self.input_control = QCheckBox(tr("Allow VoxComm controller actions"))
+        self.input_control.setToolTip(tr("This profile can only trigger configured On/Off switches through the virtual VoxComm controller."))
         self.input_control.setChecked("input_control" in self.enabled_tools.get(active_profile, []))
         self.input_action_catalog = QTableWidget(100, 4)
-        self.input_action_catalog.setHorizontalHeaderLabels(["Button", "Aktion (On/Off)", "Stichwörter", "Rückmeldung"])
+        self.input_action_catalog.setHorizontalHeaderLabels([
+            tr("Button"), tr("Action (On/Off)"), tr("Keywords"), tr("Confirmation")])
         self.input_action_catalog.verticalHeader().setVisible(False)
         self.input_action_catalog.setMinimumHeight(280)
         self.input_action_catalog.setMaximumHeight(360)
@@ -288,19 +296,20 @@ class SettingsDialog(QDialog):
         self.input_action_catalog.setColumnWidth(2, 300)
         self.input_action_catalog.horizontalHeader().setStretchLastSection(True)
         self._load_input_action_catalog(self.input_action_catalogs.get(active_profile, ""))
-        self.action_catalog_section = self._section("VoxComm-Controller", [("Aktionsverzeichnis", self.input_action_catalog)])
+        self.action_catalog_section = self._section(tr("VoxComm Controller"), [(tr("Action catalog"), self.input_action_catalog)])
         self.action_catalog_section.setVisible(self.input_control.isChecked())
         self.input_control.toggled.connect(self.action_catalog_section.setVisible)
         initial_prompt = config.global_prompt if active_profile == "__global__" else self.special_prompts.get(active_profile, "")
         self.special_prompt = QPlainTextEdit(initial_prompt)
-        self.special_prompt.setPlaceholderText("Globaler Basis-Prompt" if active_profile == "__global__" else "Aufgabenwissen und Verhaltensregeln für dieses Profil")
+        self.special_prompt.setPlaceholderText(tr("Global base prompt") if active_profile == "__global__"
+                              else tr("Task knowledge and behavior rules for this profile"))
         self.special_prompt.setMaximumBlockCount(100)
         self.special_prompt.setMinimumHeight(150)
-        self.add_profile = QPushButton("Hinzufügen")
+        self.add_profile = QPushButton(tr("Add"))
         self.add_profile.clicked.connect(self._add_special_profile)
-        self.rename_profile = QPushButton("Umbenennen")
+        self.rename_profile = QPushButton(tr("Rename"))
         self.rename_profile.clicked.connect(self._rename_special_profile)
-        self.remove_profile = QPushButton("Entfernen")
+        self.remove_profile = QPushButton(tr("Remove"))
         self.remove_profile.clicked.connect(self._remove_special_profile)
         profile_row = QHBoxLayout()
         profile_row.setSpacing(8)
@@ -309,15 +318,15 @@ class SettingsDialog(QDialog):
         profile_row.addWidget(self.remove_profile, 1)
         self._update_profile_controls()
         self.provider = QComboBox()
-        self.provider.addItem("Ollama (lokal)", "ollama")
+        self.provider.addItem(tr("Ollama (local)"), "ollama")
         self.provider.addItem("Ollama Cloud", "ollama-cloud")
         self.provider.addItem("llama.cpp", "llama.cpp")
         self.provider.setCurrentIndex(max(self.provider.findData(config.llm_provider), 0))
         self.llm_url = QLineEdit(config.llm_url)
         self.api_key = QLineEdit(config.ollama_api_key)
         self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self.api_key.setPlaceholderText("API-Schlüssel von ollama.com/settings/keys")
-        self.key_test = QPushButton("Schlüssel prüfen")
+        self.api_key.setPlaceholderText(tr("API key from ollama.com/settings/keys"))
+        self.key_test = QPushButton(tr("Verify key"))
         self.key_row = QWidget()
         key_layout = QHBoxLayout(self.key_row)
         key_layout.setContentsMargins(0, 0, 0, 0)
@@ -331,17 +340,17 @@ class SettingsDialog(QDialog):
         self._thinking_overrides = dict(config.llm_thinking_overrides)
         self._thinking_options: list[str] = []
         self.profile_thinking = QComboBox()
-        self.profile_thinking.addItem("Globaler Standard", "")
+        self.profile_thinking.addItem(tr("Global default"), "")
         profile_thinking = self._thinking_overrides.get(active_profile, "")
         if profile_thinking:
-            self.profile_thinking.addItem(THINKING_LABELS.get(profile_thinking, profile_thinking.capitalize()), profile_thinking)
+            self.profile_thinking.addItem(tr(THINKING_LABELS.get(profile_thinking, profile_thinking.capitalize())), profile_thinking)
             self.profile_thinking.setCurrentIndex(1)
         self._thinking_token = 0
         self._thinking_shown = False
         self.thinking = QComboBox()
-        self.thinking.setToolTip(
-            "Welche Stufen es gibt, meldet das Modell selbst. Bei Denkmodellen verkürzt „Aus“ die Wartezeit "
-            "bis zur Antwort deutlich.")
+        self.thinking.setToolTip(tr(
+            "The model reports which levels it supports. For reasoning models, setting this to Off can "
+            "significantly reduce response time."))
         self._fill_thinking([])
         self._thinking_timer = QTimer(self)
         self._thinking_timer.setSingleShot(True)
@@ -359,16 +368,16 @@ class SettingsDialog(QDialog):
         self.overlay_hide_seconds.setSuffix(" s")
         self.overlay_hide_seconds.setValue(config.overlay_hide_seconds)
         self.overlay_hide_seconds.setFixedHeight(30)
-        self.auto_speak = QCheckBox("Antworten nach der Generierung automatisch vorlesen")
+        self.auto_speak = QCheckBox(tr("Automatically read responses aloud after generation"))
         self.auto_speak.setChecked(config.auto_speak)
-        self.tray_mode = QCheckBox("Tray-Modus: Klick startet/stoppt die Aufnahme; Overlay-Buttons ausblenden")
+        self.tray_mode = QCheckBox(tr("Tray mode: click to start/stop recording; hide overlay buttons"))
         self.tray_mode.setChecked(config.tray_mode)
-        self.reset_position = QPushButton("Overlay-Position zurücksetzen")
+        self.reset_position = QPushButton(tr("Reset overlay position"))
         if parent is not None and hasattr(parent, "reset_overlay_position"):
             self.reset_position.clicked.connect(parent.reset_overlay_position)
         else:
             self.reset_position.setEnabled(False)
-        self.voice_refresh = self._refresh_button("Stimmen vom Dienst laden")
+        self.voice_refresh = self._refresh_button(tr("Load voices from service"))
         self.voice_refresh.clicked.connect(lambda: self._discover("voices"))
         voice_row = QHBoxLayout()
         voice_row.setContentsMargins(0, 0, 0, 0)
@@ -376,7 +385,7 @@ class SettingsDialog(QDialog):
         voice_row.addWidget(self.voice, 1)
         voice_row.addWidget(self.voice_refresh)
         self._voice_row = voice_row
-        self.model_refresh = self._refresh_button("Modelle vom Dienst laden")
+        self.model_refresh = self._refresh_button(tr("Load models from service"))
         self.model_refresh.clicked.connect(lambda: self._discover("models"))
         model_row = QHBoxLayout()
         model_row.setContentsMargins(0, 0, 0, 0)
@@ -387,27 +396,28 @@ class SettingsDialog(QDialog):
         self.response_language.setObjectName("hint")
         left = QVBoxLayout()
         left.setSpacing(14)
-        left.addWidget(self._section("Eingabe", [
-            ("PTT-Taste / Button", self.key), ("Mikrofon-Samplerate", self.sample_rate),
-            ("Overlay-Anzeigedauer", self.overlay_hide_seconds),
+        left.addWidget(self._section(tr("Input"), [
+            (tr("Interface language"), self.ui_language),
+            (tr("PTT key / button"), self.key), (tr("Microphone sample rate"), self.sample_rate),
+            (tr("Overlay display duration"), self.overlay_hide_seconds),
             (None, self.tray_mode), (None, self.reset_position),
         ]))
-        self.llm_section = self._section("Sprachmodell", [
-            ("Anbieter", self.provider), ("URL", self.llm_url), ("Modell", model_row),
-            ("Denkmodus", self.thinking), ("API-Schlüssel", self.key_row),
+        self.llm_section = self._section(tr("Language model"), [
+            (tr("Provider"), self.provider), (tr("URL"), self.llm_url), (tr("Model"), model_row),
+            (tr("Reasoning mode"), self.thinking), (tr("API key"), self.key_row),
         ])
         left.addWidget(self.llm_section)
         left.addStretch(1)
         right = QVBoxLayout()
         right.setSpacing(14)
-        self.stt_section = self._section("Spracherkennung", [
-            ("Schnittstelle", self.stt_provider), ("URL", self.stt), ("Erkennungssprache", self.stt_language),
+        self.stt_section = self._section(tr("Speech recognition"), [
+            (tr("Provider"), self.stt_provider), (tr("URL"), self.stt), (tr("Recognition language"), self.stt_language),
         ])
         right.addWidget(self.stt_section)
-        self.tts_section = self._section("Sprachausgabe", [
-            ("Schnittstelle", self.tts_provider), ("URL", self.tts), ("TTS-Sprache", self.tts_language),
-            ("Stimmen-Sprache", self.voice_language), ("Stimme", voice_row),
-            ("Antwortsprache", self.response_language), (None, self.auto_speak),
+        self.tts_section = self._section(tr("Speech output"), [
+            (tr("Provider"), self.tts_provider), (tr("URL"), self.tts), (tr("TTS language"), self.tts_language),
+            (tr("Voice language"), self.voice_language), (tr("Voice"), voice_row),
+            (tr("Response language"), self.response_language), (None, self.auto_speak),
         ])
         right.addWidget(self.tts_section)
         right.addStretch(1)
@@ -422,19 +432,19 @@ class SettingsDialog(QDialog):
         prompt_tab = QWidget()
         prompt_layout = QVBoxLayout(prompt_tab)
         prompt_layout.setContentsMargins(0, 0, 0, 0)
-        prompt_layout.addWidget(self._section("Prompt", [
-            ("Profil", self.special_profile), ("", profile_row), ("Profil-Hotkey", self.profile_hotkey),
-            ("Denkmodus-Override", self.profile_thinking),
+        prompt_layout.addWidget(self._section(tr("Prompt"), [
+            (tr("Profile"), self.special_profile), ("", profile_row), (tr("Profile hotkey"), self.profile_hotkey),
+            (tr("Reasoning mode override"), self.profile_thinking),
             (None, self.web_search), (None, self.input_control),
             (None, self.special_prompt),
         ]), 1)
         prompt_layout.addWidget(self.action_catalog_section)
         settings_tabs = QTabWidget()
-        settings_tabs.addTab(global_tab, "Global Settings")
-        settings_tabs.addTab(prompt_tab, "Prompt Settings")
-        title = QLabel("Einstellungen")
+        settings_tabs.addTab(global_tab, tr("Global Settings"))
+        settings_tabs.addTab(prompt_tab, tr("Prompt Settings"))
+        title = QLabel(tr("Settings"))
         title.setObjectName("dialogTitle")
-        self.discovery_status = QLabel("Stimmen und Modelle lassen sich über das Aktualisieren-Symbol vom Dienst laden")
+        self.discovery_status = QLabel(tr("Load voices and models from the service using the refresh button"))
         self.discovery_status.setObjectName("hint")
         self.discovery_status.setWordWrap(True)
         self.key.error.connect(self.discovery_status.setText)
@@ -450,7 +460,7 @@ class SettingsDialog(QDialog):
         self._update_stt_fields()
         self._update_tts_fields()
         self._update_llm_fields()
-        save = QPushButton("Speichern")
+        save = QPushButton(tr("Save"))
         save.setObjectName("primary")
         save.setDefault(True)
         save.setMinimumWidth(130)
@@ -509,14 +519,14 @@ class SettingsDialog(QDialog):
         self._thinking_options = list(options)
         selected = self._thinking_setting
         self.thinking.clear()
-        self.thinking.addItem("Modell-Standard", "")
+        self.thinking.addItem(tr("Model default"), "")
         for option in options:
-            self.thinking.addItem(THINKING_LABELS.get(option, option.capitalize()), option)
+            self.thinking.addItem(tr(THINKING_LABELS.get(option, option.capitalize())), option)
         if known and not options:
             self.thinking.clear()
-            self.thinking.addItem("Vom Modell nicht steuerbar", "")
+            self.thinking.addItem(tr("Not controlled by model"), "")
         elif not known and selected:
-            self.thinking.addItem(THINKING_LABELS.get(selected, selected.capitalize()), selected)
+            self.thinking.addItem(tr(THINKING_LABELS.get(selected, selected.capitalize())), selected)
         self.thinking.setEnabled(not known or bool(options))
         self.thinking.setCurrentIndex(max(self.thinking.findData(selected), 0))
         self._fill_profile_thinking()
@@ -525,11 +535,11 @@ class SettingsDialog(QDialog):
         selected = self._thinking_overrides.get(self._active_profile_name, "")
         self.profile_thinking.blockSignals(True)
         self.profile_thinking.clear()
-        self.profile_thinking.addItem("Globaler Standard", "")
+        self.profile_thinking.addItem(tr("Global default"), "")
         for option in self._thinking_options:
-            self.profile_thinking.addItem(THINKING_LABELS.get(option, option.capitalize()), option)
+            self.profile_thinking.addItem(tr(THINKING_LABELS.get(option, option.capitalize())), option)
         if selected and selected not in self._thinking_options:
-            self.profile_thinking.addItem(THINKING_LABELS.get(selected, selected.capitalize()), selected)
+            self.profile_thinking.addItem(tr(THINKING_LABELS.get(selected, selected.capitalize())), selected)
         self.profile_thinking.setCurrentIndex(max(self.profile_thinking.findData(selected), 0))
         self.profile_thinking.blockSignals(False)
 
@@ -611,13 +621,14 @@ class SettingsDialog(QDialog):
         if models:
             self._fill_models(models)
             age = max(0, int(time.time() - fetched_at))
-            self.discovery_status.setText(f"{len(models)} Modelle aus dem Zwischenspeicher ({age // 3600} h alt)")
+            self.discovery_status.setText(tr("{count} models from cache ({hours} h old)",
+                                             count=len(models), hours=age // 3600))
         if not models or time.time() - fetched_at > cloud.MODEL_CACHE_TTL_SECONDS:
             self._discover("models")
 
     def _test_api_key(self):
         self.key_test.setEnabled(False)
-        self.discovery_status.setText("Prüfe API-Schlüssel …")
+        self.discovery_status.setText(tr("Verifying API key …"))
         endpoint = self.llm_url.text().strip() or cloud.CLOUD_BASE_URL
         api_key = self.api_key.text()
 
@@ -633,15 +644,15 @@ class SettingsDialog(QDialog):
     def _general_hotkey_conflict(self, key: str) -> str | None:
         for name, other in self.special_hotkeys.items():
             if other == key:
-                return f"Hotkey {key.upper()} ist schon für das Profil '{name}' vergeben"
+                return tr("Hotkey {key} is already assigned to profile '{name}'", key=key.upper(), name=name)
         return None
 
     def _profile_hotkey_conflict(self, key: str) -> str | None:
         if key == self.key.value().lower():
-            return f"Hotkey {key.upper()} ist schon der allgemeine Push-to-talk-Hotkey"
+                return tr("Hotkey {key} is already assigned to the global push-to-talk key", key=key.upper())
         for name, other in self.special_hotkeys.items():
             if other == key and name != self._active_profile_name:
-                return f"Hotkey {key.upper()} ist schon für das Profil '{name}' vergeben"
+                return tr("Hotkey {key} is already assigned to profile '{name}'", key=key.upper(), name=name)
         return None
 
     def _store_profile_hotkey(self, key: str):
@@ -729,7 +740,8 @@ class SettingsDialog(QDialog):
         self._load_input_action_catalog(self.input_action_catalogs.get(self._active_profile_name, ""))
         self.special_prompt.setPlainText(prompt)
         self._fill_profile_thinking()
-        self.special_prompt.setPlaceholderText("Globaler Basis-Prompt" if self._active_profile_name == "__global__" else "Aufgabenwissen und Verhaltensregeln für dieses Profil")
+        self.special_prompt.setPlaceholderText(tr("Global base prompt") if self._active_profile_name == "__global__"
+                               else tr("Task knowledge and behavior rules for this profile"))
         self._update_profile_controls()
 
     def _update_profile_controls(self):
@@ -743,7 +755,7 @@ class SettingsDialog(QDialog):
     def _refresh_special_profiles(self, selected: str):
         self.special_profile.blockSignals(True)
         self.special_profile.clear()
-        self.special_profile.addItem("Global", "__global__")
+        self.special_profile.addItem(tr("Global"), "__global__")
         for name in sorted(self.special_prompts, key=str.casefold):
             self.special_profile.addItem(name, name)
         self.special_profile.setCurrentIndex(max(self.special_profile.findData(selected), 0))
@@ -758,17 +770,18 @@ class SettingsDialog(QDialog):
         self._load_input_action_catalog(self.input_action_catalogs.get(self._active_profile_name, ""))
         self.special_prompt.setPlainText(prompt)
         self._fill_profile_thinking()
-        self.special_prompt.setPlaceholderText("Globaler Basis-Prompt" if self._active_profile_name == "__global__" else "Aufgabenwissen und Verhaltensregeln für dieses Profil")
+        self.special_prompt.setPlaceholderText(tr("Global base prompt") if self._active_profile_name == "__global__"
+                               else tr("Task knowledge and behavior rules for this profile"))
         self._update_profile_controls()
 
     def _add_special_profile(self):
         self._store_special_profile()
-        name, accepted = QInputDialog.getText(self, "Spezialprofil hinzufügen", "Profilname")
+        name, accepted = QInputDialog.getText(self, tr("Add special profile"), tr("Profile name"))
         name = name.strip()
         if not accepted or not name:
             return
         if name in self.special_prompts:
-            QMessageBox.information(self, "Profil vorhanden", "Dieser Profilname ist bereits vorhanden.")
+            QMessageBox.information(self, tr("Profile exists"), tr("This profile name is already in use."))
             return
         self.special_prompts[name] = ""
         self._refresh_special_profiles(name)
@@ -777,12 +790,12 @@ class SettingsDialog(QDialog):
         current = self.special_profile.currentData()
         if not current:
             return
-        name, accepted = QInputDialog.getText(self, "Spezialprofil umbenennen", "Profilname", text=current)
+        name, accepted = QInputDialog.getText(self, tr("Rename special profile"), tr("Profile name"), text=current)
         name = name.strip()
         if not accepted or not name or name == current:
             return
         if name in self.special_prompts:
-            QMessageBox.information(self, "Profil vorhanden", "Dieser Profilname ist bereits vorhanden.")
+            QMessageBox.information(self, tr("Profile exists"), tr("This profile name is already in use."))
             return
         self._store_special_profile()
         self.special_prompts[name] = self.special_prompts.pop(current)
@@ -800,7 +813,8 @@ class SettingsDialog(QDialog):
         current = self.special_profile.currentData()
         if not current:
             return
-        answer = QMessageBox.question(self, "Spezialprofil entfernen", f"Profil '{current}' wirklich entfernen?")
+        answer = QMessageBox.question(self, tr("Remove special profile"),
+                          tr("Really remove profile '{name}'?", name=current))
         if answer != QMessageBox.StandardButton.Yes:
             return
         self._store_special_profile()
@@ -826,7 +840,7 @@ class SettingsDialog(QDialog):
                 cloud.CLOUD_BASE_URL if provider == "ollama-cloud" else "")
             lookup = lambda: list_models(provider, endpoint)
         button.setEnabled(False)
-        self.discovery_status.setText("Verbinde mit Dienst …")
+        self.discovery_status.setText(tr("Connecting to service …"))
 
         def run():
             try:
@@ -839,24 +853,26 @@ class SettingsDialog(QDialog):
     def _discovery_result(self, kind: str, values: list[str], error: str):
         if kind == "key":
             self.key_test.setEnabled(True)
-            self.discovery_status.setText("API-Schlüssel gültig" if not error
-                                          else f"API-Schlüssel ungültig: {error}")
+            self.discovery_status.setText(tr("API key is valid") if not error
+                                          else tr("Invalid API key: {error}", error=error))
             return
-        combo, button, label = (self.voice, self.voice_refresh, "Stimmen") if kind == "voices" else (self.model, self.model_refresh, "Modelle")
+        combo, button, label = (self.voice, self.voice_refresh, tr("voices")) if kind == "voices" else (self.model, self.model_refresh, tr("models"))
         button.setEnabled(True)
         if error:
-            self.discovery_status.setText(f"{label} konnten nicht geladen werden: {error}")
+            self.discovery_status.setText(tr("Could not load {label}: {error}", label=label, error=error))
             return
         if kind == "voices":
             self._available_voices = values
             self._refresh_voice_language_options()
             self._refresh_voice_options()
-            self.discovery_status.setText(f"{len(values)} Stimmen gefunden" if values else "Keine Stimmen vom Dienst gemeldet")
+            self.discovery_status.setText(tr("Found {count} voices", count=len(values)) if values
+                                          else tr("The service reported no voices"))
             return
         if self.provider.currentData() == "ollama-cloud":
             cloud.store_models(values)
         self._fill_models(values)
-        self.discovery_status.setText(f"{len(values)} {label.lower()} gefunden" if values else f"Keine {label.lower()} vom Dienst gemeldet")
+        self.discovery_status.setText(tr("Found {count} {label}", count=len(values), label=label) if values
+                          else tr("The service reported no {label}", label=label))
 
     def _refresh_voice_language_options(self):
         current = self.voice_language.currentData()
@@ -864,7 +880,7 @@ class SettingsDialog(QDialog):
         available_codes = set(LANGUAGE_LABELS) | discovered
         self.voice_language.blockSignals(True)
         self.voice_language.clear()
-        self.voice_language.addItem("Alle Sprachen", "")
+        self.voice_language.addItem(tr("All languages"), "")
         for code in sorted(available_codes, key=lambda value: (LANGUAGE_LABELS.get(value, value.upper()).casefold(), value)):
             label = LANGUAGE_LABELS.get(code, code.upper())
             self.voice_language.addItem(f"{label} ({code})", code)
@@ -889,6 +905,7 @@ class SettingsDialog(QDialog):
         self._update_response_language(self.voice.currentText())
 
     def apply(self, config: AppConfig) -> AppConfig:
+        config.ui_language = self.ui_language.currentData() or "en"
         config.stt_url, config.tts_url, config.tts_voice = self.stt.text(), self.tts.text(), self.voice.currentText()
         config.stt_provider = self.stt_provider.currentData() or "wyoming"
         config.tts_provider = self.tts_provider.currentData() or "wyoming"
@@ -981,13 +998,15 @@ class Overlay(QMainWindow):
     def __init__(self):
         super().__init__()
         self.config = load_config()
+        set_language(self.config.ui_language)
         self.events = Events()
         self.events.ptt.connect(self._ptt_event)
         self.events.message.connect(self._show_message)
         self.events.request_message.connect(self._show_request_message)
+        self.events.activity.connect(self._show_activity)
         self.events.speak.connect(self._start_speak)
         self.events.speech_finished.connect(self._speech_finished)
-        self.setWindowTitle(APP_NAME)
+        self.setWindowTitle(tr("{name}", name=APP_NAME))
         self.setWindowIcon(make_app_icon())
         self.setWindowFlags(
             Qt.WindowType.WindowStaysOnTopHint
@@ -1001,7 +1020,7 @@ class Overlay(QMainWindow):
         self.status = _OverlayDragHandle("")
         self.status.setFont(QApplication.font())
         self.status.setCursor(Qt.CursorShape.SizeAllCursor)
-        self.status.setToolTip("Zum Verschieben ziehen")
+        self.status.setToolTip(tr("Drag to move"))
         self.transcript = _OverlayTranscript()
         self.transcript.setReadOnly(True)
         self.transcript.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -1021,7 +1040,7 @@ class Overlay(QMainWindow):
         text_column.addWidget(self.transcript)
         text_container = _OverlayDragSurface()
         text_container.setCursor(Qt.CursorShape.SizeAllCursor)
-        text_container.setToolTip("Zum Verschieben ziehen")
+        text_container.setToolTip(tr("Drag to move"))
         text_container.setLayout(text_column)
         self._text_container = text_container
         self._text_opacity = QGraphicsOpacityEffect(text_container)
@@ -1031,21 +1050,21 @@ class Overlay(QMainWindow):
         self.mic.setFixedSize(44, 44)
         self.mic.pressed.connect(lambda: self._ptt_event("pressed", ""))
         self.mic.released.connect(lambda: self._ptt_event("released", ""))
-        self.mic.setToolTip("Zum Sprechen gedrückt halten")
+        self.mic.setToolTip(tr("Hold to speak"))
         root.addWidget(self.mic, 0, Qt.AlignmentFlag.AlignTop)
         self.say = QToolButton()
         self.say.setFixedSize(44, 44)
-        self.say.setToolTip("Letzte Antwort vorlesen")
+        self.say.setToolTip(tr("Read last response aloud"))
         self.say.clicked.connect(self._speak_last)
         root.addWidget(self.say, 0, Qt.AlignmentFlag.AlignTop)
         self.settings_button = QToolButton()
         self.settings_button.setFixedSize(44, 44)
-        self.settings_button.setToolTip("Einstellungen")
+        self.settings_button.setToolTip(tr("Settings"))
         self.settings_button.clicked.connect(self._settings)
         root.addWidget(self.settings_button, 0, Qt.AlignmentFlag.AlignTop)
         root.addWidget(text_container, 1)
         container = _OverlayDragSurface()
-        container.setToolTip("Zum Verschieben ziehen")
+        container.setToolTip(tr("Drag to move"))
         container.setObjectName("overlayPanel")
         container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
         container.setLayout(root)
@@ -1097,18 +1116,18 @@ class Overlay(QMainWindow):
     def _init_tray(self):
         self.tray_menu = QMenu(self)
         self.tray_menu.setStyleSheet(dialog_stylesheet(system_accent(), system_surface(), system_text()))
-        self.tray_toggle_action = QAction("Aufnahme starten", self)
+        self.tray_toggle_action = QAction(tr("Start recording"), self)
         self.tray_toggle_action.triggered.connect(self._toggle_tray_recording)
         self.tray_menu.addAction(self.tray_toggle_action)
         self.tray_menu.addSeparator()
-        self.tray_settings_action = QAction("Einstellungen …", self)
+        self.tray_settings_action = QAction(tr("Settings …"), self)
         self.tray_settings_action.triggered.connect(self._settings)
         self.tray_menu.addAction(self.tray_settings_action)
-        self.tray_play_action = QAction("Letzte Antwort erneut vorlesen", self)
+        self.tray_play_action = QAction(tr("Read last response aloud again"), self)
         self.tray_play_action.triggered.connect(self._speak_last)
         self.tray_menu.addAction(self.tray_play_action)
         self.tray_menu.addSeparator()
-        self.tray_exit_action = QAction("Beenden", self)
+        self.tray_exit_action = QAction(tr("Quit"), self)
         self.tray_exit_action.triggered.connect(self.close)
         self.tray_menu.addAction(self.tray_exit_action)
         self.tray_icon = QSystemTrayIcon(make_app_icon(), self)
@@ -1130,7 +1149,7 @@ class Overlay(QMainWindow):
                 self.tray_icon.hide()
                 self._fit_to_content()
                 self.show()
-                self._set_status("System-Tray nicht verfügbar · Overlay-Modus aktiviert")
+                self._set_status(tr("System tray unavailable · Overlay mode enabled"))
                 return
             self._fit_to_content()
             self.tray_icon.show()
@@ -1147,12 +1166,12 @@ class Overlay(QMainWindow):
     def _toggle_tray_recording(self):
         if self._recording:
             self._tray_recording = False
-            self.tray_toggle_action.setText("Aufnahme starten")
+            self.tray_toggle_action.setText(tr("Start recording"))
             self._ptt_event("released", "")
         else:
             self._tray_recording = True
-            self.tray_toggle_action.setText("Aufnahme senden")
-            self.tray_icon.setToolTip(f"{APP_NAME} · Aufnahme läuft. Zum Senden erneut klicken.")
+            self.tray_toggle_action.setText(tr("Send recording"))
+            self.tray_icon.setToolTip(tr("{name} · Recording. Click again to send.", name=APP_NAME))
             self._ptt_event("pressed", "")
 
     def _make_listener(self):
@@ -1164,7 +1183,7 @@ class Overlay(QMainWindow):
         try:
             from voxcomm.gamepad import start, status
         except ImportError as error:
-            self._set_status(f"Controller nicht verfügbar · {str(error)[:120]}")
+            self._set_status(tr("Controller unavailable · {error}", error=str(error)[:120]))
             return
 
         try:
@@ -1175,7 +1194,7 @@ class Overlay(QMainWindow):
         try:
             self._gamepad_owned = start().startswith("VoxComm controller started")
         except (OSError, RuntimeError) as error:
-            self._set_status(f"Controller nicht gestartet · {str(error)[:120]}")
+            self._set_status(tr("Controller failed to start · {error}", error=str(error)[:120]))
 
     def _stop_gamepad(self):
         if not self._gamepad_owned:
@@ -1256,12 +1275,12 @@ class Overlay(QMainWindow):
             self._hide_timer.stop()
             self._hide_after_typing = False
             self._tray_recording = True
-            self.tray_toggle_action.setText("Aufnahme senden")
+            self.tray_toggle_action.setText(tr("Send recording"))
             self._fade_animation.stop()
             self._text_opacity.setOpacity(1)
             profile_note = f" · {text}" if text else ""
-            self._set_status(f"Aufnahme läuft{profile_note} · erneut klicken zum Senden" if self.config.tray_mode
-                             else f"Aufnahme läuft{profile_note} · loslassen zum Senden")
+            self._set_status(tr("Recording{profile} · click again to send", profile=profile_note) if self.config.tray_mode
+                             else tr("Recording{profile} · release to send", profile=profile_note))
             self.show()
             self.raise_()
             if not self._recording:
@@ -1280,7 +1299,7 @@ class Overlay(QMainWindow):
             self._ptt_pressed_at = None
             self._recording = False
             self._tray_recording = False
-            self.tray_toggle_action.setText("Aufnahme starten")
+            self.tray_toggle_action.setText(tr("Start recording"))
             self.tray_icon.setToolTip(APP_NAME)
             is_short_press = press_duration is not None and press_duration < MIN_PTT_DURATION_MS / 1000
             if is_short_press:
@@ -1289,7 +1308,7 @@ class Overlay(QMainWindow):
                 self._capture_stop.set()
                 self._capture_stop = None
             if not is_short_press:
-                self._set_status("Verarbeite Sprache …")
+                self._set_status(tr("Processing speech …"))
 
     def _clear_transcript(self):
         self._type_timer.stop()
@@ -1305,7 +1324,7 @@ class Overlay(QMainWindow):
         self._clear_transcript()
         self._hide_timer.stop()
         self._hide_after_typing = True
-        self._set_status("Bereit · Anfrage abgebrochen")
+        self._set_status(tr("Ready · request cancelled"))
         self._schedule_hide()
 
     def _capture(self, stop_event: threading.Event, profile: str = "", cancel_event=None):
@@ -1320,7 +1339,7 @@ class Overlay(QMainWindow):
                 return
             minimum_bytes = self.config.sample_rate * 2 * MIN_PTT_DURATION_MS // 1000
             if len(audio) < minimum_bytes:
-                self.events.request_message.emit("Bereit · Aufnahme zu kurz", "", cancel_event)
+                self.events.request_message.emit(tr("Ready · recording too short"), "", cancel_event)
                 return
             debug_wav = os.environ.get("SC_AI_COPILOT_DEBUG_WAV")
             if debug_wav:
@@ -1332,7 +1351,7 @@ class Overlay(QMainWindow):
             if cancel_event.is_set():
                 return
             if not text:
-                self.events.request_message.emit("Bereit · keine Sprache erkannt", "", cancel_event)
+                self.events.request_message.emit(tr("Ready · no speech detected"), "", cancel_event)
                 return
             self.events.request_message.emit(THINKING_STATUS, f"{USER_PREFIX}{text}\n", cancel_event)
             profile_name = profile if profile in self.config.special_prompts else ""
@@ -1363,6 +1382,7 @@ class Overlay(QMainWindow):
                     on_text=(lambda delta: (streamed.append(delta), speech.feed(delta))) if speech else None,
                     thinking=self.config.llm_thinking_overrides.get(
                         profile_name or "__global__", self.config.llm_thinking),
+                    on_status=lambda status: self.events.activity.emit(status, cancel_event),
                 )
                 if speech is not None and not streamed and not cancel_event.is_set():
                     speech.feed(answer)
@@ -1372,13 +1392,13 @@ class Overlay(QMainWindow):
             if cancel_event.is_set():
                 return
             self.events.request_message.emit(
-                "Bereit · Antwort lokal erzeugt", f"{USER_PREFIX}{text}{AI_MARKER}{answer}", cancel_event
+                tr("Ready · response generated locally"), f"{USER_PREFIX}{text}{AI_MARKER}{answer}", cancel_event
             )
             if self.config.auto_speak and speech is None and not cancel_event.is_set():
                 self.events.speak.emit(answer, cancel_event)
         except Exception as error:
             if not cancel_event.is_set():
-                self.events.request_message.emit(f"Fehler · {error}", "", cancel_event)
+                self.events.request_message.emit(tr("Error · {error}", error=error), "", cancel_event)
         finally:
             with self._request_cancellations_lock:
                 self._request_cancellations.discard(cancel_event)
@@ -1386,6 +1406,10 @@ class Overlay(QMainWindow):
     def _show_request_message(self, status: str, text: str, cancel_event: threading.Event):
         if not cancel_event.is_set():
             self._show_message(status, text)
+
+    def _show_activity(self, status: str, cancel_event: threading.Event):
+        if not cancel_event.is_set():
+            self._set_status(status)
 
     def _show_message(self, status: str, text: str):
         self._set_status(status)
@@ -1413,9 +1437,11 @@ class Overlay(QMainWindow):
             self._last_response = text.split(AI_MARKER, 1)[1]
 
     def _set_status(self, text: str):
+        message_id = text
+        text = tr(message_id)
         self.status.setText(text)
         showing_last_answer = AI_MARKER in self._last_text and self._typing_text == self._last_text
-        if text in (SPEAKING_STATUS, "Bereit · PTT zum Sprechen") and showing_last_answer:
+        if message_id in (SPEAKING_STATUS, "Ready · press PTT to speak") and showing_last_answer:
             user_text, _marker, answer = self._last_text.partition(AI_MARKER)
             publish_status(f"{user_text}\n{AI_LABEL}{answer}")
         else:
@@ -1521,7 +1547,7 @@ class Overlay(QMainWindow):
 
     def _speak_last(self):
         if not self._last_response:
-            self._show_message("Noch keine Antwort zum Vorlesen", "")
+            self._show_message(tr("No response to read yet"), "")
             return
         self._show_message(SPEAKING_STATUS, self._last_text)
         self._start_speak(self._last_response)
@@ -1556,23 +1582,28 @@ class Overlay(QMainWindow):
             sentences = [source] if isinstance(source, str) else source
             play_stream(prefetch(self._speech_chunks(sentences), cancel_event), cancel_event)
             if not cancel_event.is_set():
-                self.events.request_message.emit("Bereit · PTT zum Sprechen", "", cancel_event)
+                self.events.request_message.emit(tr("Ready · press PTT to speak"), "", cancel_event)
         except Exception as error:
             if not cancel_event.is_set():
-                self.events.request_message.emit(f"Sprachausgabe-Fehler · {error}", "", cancel_event)
+                self.events.request_message.emit(tr("Speech output error · {error}", error=error), "", cancel_event)
         finally:
             self.events.speech_finished.emit()
 
     def _settings(self):
         dialog = SettingsDialog(self.config)
         if dialog.exec():
+            previous_language = self.config.ui_language
             self.listener.stop()
             self.config = dialog.apply(self.config)
             self._hide_timer.setInterval(self.config.overlay_hide_seconds * 1000)
             if self.config.tray_mode and not QSystemTrayIcon.isSystemTrayAvailable():
-                QMessageBox.warning(dialog, "Tray nicht verfügbar", "In dieser Sitzung ist kein System-Tray verfügbar. Der Overlay-Modus bleibt aktiv.")
+                QMessageBox.warning(dialog, tr("System tray unavailable"),
+                                    tr("No system tray is available in this session. Overlay mode will remain active."))
                 self.config.tray_mode = False
             save_config(self.config)
+            if self.config.ui_language != previous_language:
+                QMessageBox.information(dialog, tr("Restart required"),
+                                        tr("Restart VoxComm to apply the interface language change."))
             self.listener = self._make_listener()
             self.listener.start()
             self._apply_display_mode()
@@ -1633,11 +1664,11 @@ def prefer_x11_on_wayland():
 
 def main():
     parser = argparse.ArgumentParser(prog=APP_ID, description=APP_NAME)
-    parser.add_argument("--install-launcher", action="store_true", help="Starter und Icon im Anwendungsmenü installieren")
+    parser.add_argument("--install-launcher", action="store_true", help="Install the launcher and icon in the application menu")
     arguments = parser.parse_args()
     if arguments.install_launcher:
         desktop_path, icon_path = install_launcher()
-        print(f"Starter: {desktop_path}\nIcon:    {icon_path}")
+        print(f"Launcher: {desktop_path}\nIcon:     {icon_path}")
         raise SystemExit(0)
     prefer_x11_on_wayland()
     app = QApplication([])

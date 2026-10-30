@@ -10,13 +10,14 @@ from urllib.parse import urlparse
 import httpx
 
 from voxcomm.providers.web import MAX_QUERY_LENGTH, MAX_RESULTS, MAX_SNIPPET_LENGTH, MAX_TITLE_LENGTH
+from voxcomm.i18n import tr
 
 
 CLOUD_BASE_URL = "https://ollama.com"
 MODEL_CACHE_TTL_SECONDS = 24 * 60 * 60
 TAGS_TIMEOUT_SECONDS = 10
 SEARCH_TIMEOUT_SECONDS = 20
-AUTH_ERROR = "Ollama-Cloud-API-Schlüssel fehlt oder ist ungültig"
+AUTH_ERROR = "Ollama Cloud API key is missing or invalid"
 
 
 class CloudAuthError(RuntimeError):
@@ -76,9 +77,10 @@ def verify_api_key(base_url: str, api_key: str) -> None:
         timeout=SEARCH_TIMEOUT_SECONDS,
     )
     if response.status_code in (401, 403):
-        raise CloudAuthError(AUTH_ERROR)
+        raise CloudAuthError(tr(AUTH_ERROR))
     if response.status_code >= 400:
-        raise RuntimeError(f"Ollama Cloud antwortet mit HTTP {response.status_code}: {response.text[:200]}")
+        raise RuntimeError(tr("Ollama Cloud returned HTTP {status}: {error}",
+                      status=response.status_code, error=response.text[:200]))
 
 
 def web_search(query: str, base_url: str, api_key: str) -> list[dict[str, str]]:
@@ -88,7 +90,7 @@ def web_search(query: str, base_url: str, api_key: str) -> list[dict[str, str]]:
     if len(query) > MAX_QUERY_LENGTH:
         raise ValueError(f"Search query cannot exceed {MAX_QUERY_LENGTH} characters")
     if not api_key.strip():
-        raise CloudAuthError("Ollama-Cloud-API-Schlüssel fehlt")
+        raise CloudAuthError(tr("Ollama Cloud API key is missing"))
     response = httpx.post(
         f"{base_url.rstrip('/')}/api/web_search",
         json={"query": query, "max_results": MAX_RESULTS},
@@ -96,7 +98,7 @@ def web_search(query: str, base_url: str, api_key: str) -> list[dict[str, str]]:
         timeout=SEARCH_TIMEOUT_SECONDS,
     )
     if response.status_code in (401, 403):
-        raise CloudAuthError(AUTH_ERROR)
+        raise CloudAuthError(tr(AUTH_ERROR))
     if response.status_code >= 400:
         raise RuntimeError(f"Ollama web search failed with HTTP {response.status_code}")
     safe_results: list[dict[str, str]] = []

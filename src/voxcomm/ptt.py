@@ -5,6 +5,8 @@ import selectors
 import threading
 import time
 
+from voxcomm.i18n import tr
+
 _KEY_ALIASES = {
     "ctrl": "LEFTCTRL", "ctrl_l": "LEFTCTRL", "ctrl_r": "RIGHTCTRL",
     "alt": "LEFTALT", "alt_l": "LEFTALT", "alt_r": "RIGHTALT", "alt_gr": "RIGHTALT",
@@ -54,7 +56,7 @@ def capture_input(stop: threading.Event, timeout: float = 15.0) -> str | None:
             device.close()
     if not selector.get_map():
         selector.close()
-        raise PermissionError("Keine lesbaren Eingabegeräte gefunden (Zugriff auf /dev/input erforderlich)")
+        raise PermissionError(tr("No readable input devices found (access to /dev/input required)"))
     deadline = time.monotonic() + timeout
     try:
         while not stop.is_set() and time.monotonic() < deadline:
@@ -102,7 +104,7 @@ class PttListener:
         for name, profile in self._key_profiles().items():
             code = evdev_key_code(name)
             if code is None:
-                raise ValueError(f"unbekannte Eingabe '{name}'")
+                raise ValueError(tr("Unknown input '{name}'", name=name))
             codes.setdefault(code, profile)
         if not codes:
             return codes, []
@@ -120,7 +122,7 @@ class PttListener:
             else:
                 device.close()
         if not devices and denied:
-            raise PermissionError("kein Zugriff auf /dev/input (Zugriff auf Eingabegeräte erforderlich)")
+            raise PermissionError(tr("No access to /dev/input (input device access is required)"))
         return codes, devices
 
     def _start_input_devices(self) -> None:
@@ -133,12 +135,12 @@ class PttListener:
                 thread.start()
                 self._threads.append(thread)
                 return
-            reason = "kein Eingabegerät mit den Hotkeys gefunden"
+            reason = tr("No input device with the configured hotkeys was found")
         except Exception as error:
             reason = str(error) or type(error).__name__
         if os.environ.get("WAYLAND_DISPLAY"):
             # pynput sieht unter Wayland nur Tasten fokussierter X11-Fenster.
-            self.on_change("error", f"Globale PTT nicht verfügbar: {reason}; nutze den Overlay-PTT-Button")
+            self.on_change("error", tr("Global PTT unavailable: {reason}; use the overlay PTT button", reason=reason))
         else:
             try:
                 from pynput import keyboard
@@ -153,7 +155,7 @@ class PttListener:
                 )
                 self._keyboard.start()
             except Exception as error:
-                self.on_change("error", f"Tastatur-PTT nicht verfügbar ({reason}; {error})")
+                self.on_change("error", tr("Keyboard PTT unavailable ({reason}; {error})", reason=reason, error=error))
 
     def _watch_inputs(self, codes: dict[int, str], devices: list) -> None:
         from evdev import ecodes
@@ -174,7 +176,7 @@ class PttListener:
                         selector.unregister(device)
                         device.close()
             if not self._stop.is_set():
-                self.on_change("error", "Eingabegerät für die PTT-Belegung wurde getrennt")
+                self.on_change("error", tr("Input device for the PTT binding was disconnected"))
         finally:
             for key in list(selector.get_map().values()):
                 key.fileobj.close()

@@ -8,6 +8,7 @@ import httpx
 from threading import Event
 
 from voxcomm.action_catalog import match_action, parse_action_catalog
+from voxcomm.i18n import tr
 from voxcomm.providers.cloud import CloudAuthError, list_cloud_models, web_search as cloud_web_search
 from voxcomm.providers.web import search_web
 
@@ -180,7 +181,7 @@ def _request(
             payload["think"] = think
         response = httpx.post(f"{base_url}/api/chat", json=payload, headers=headers, timeout=120)
         if response.status_code in (401, 403):
-            raise CloudAuthError("Ollama-Cloud-API-Schlüssel fehlt oder ist ungültig")
+            raise CloudAuthError(tr("Ollama Cloud API key is missing or invalid"))
         response.raise_for_status()
         return response.json()["message"]
     raise ValueError(f"Unsupported LLM provider: {provider}")
@@ -214,7 +215,7 @@ def _request_stream(
     openai_calls: dict[int, dict] = {}
     with httpx.stream("POST", endpoint, json=payload, headers=headers, timeout=90) as response:
         if provider == "ollama-cloud" and response.status_code in (401, 403):
-            raise CloudAuthError("Ollama-Cloud-API-Schlüssel fehlt oder ist ungültig")
+            raise CloudAuthError(tr("Ollama Cloud API key is missing or invalid"))
         response.raise_for_status()
         for line in response.iter_lines():
             if cancel_event is not None and cancel_event.is_set():
@@ -366,9 +367,14 @@ def chat(
     cancel_event: Event | None = None,
     on_text=None,
     thinking: str = "",
+    on_status=None,
 ) -> str:
     def cancelled() -> bool:
         return cancel_event is not None and cancel_event.is_set()
+
+    def report_status(status: str) -> None:
+        if on_status is not None and not cancelled():
+            on_status(status)
 
     if cancelled():
         return ""
@@ -377,22 +383,23 @@ def chat(
         try:
             input_action_entries = parse_action_catalog(input_actions)
         except ValueError as error:
-            return f"Aktionsverzeichnis fehlerhaft: {error}"
+            return tr("Action catalog is invalid: {error}", error=error)
     if "input_control" in enabled_tools and input_actions.strip():
         try:
             action = match_action(input_actions, prompt)
         except ValueError as error:
-            return f"Aktionsverzeichnis fehlerhaft: {error}"
+            return tr("Action catalog is invalid: {error}", error=error)
         if action is not None:
             if cancelled():
                 return ""
             try:
+                report_status(tr("Controller action: {action} …", action=action["name"]))
                 button = press_gamepad_button(action["button"])
                 return f"{action['reply']} ({button} gesendet)."
             except Exception as error:
-                return f"Eingabe nicht gesendet: {str(error)[:200]}"
+                return tr("Input was not sent: {error}", error=str(error)[:200])
     if not model.strip():
-        return "Kein LLM-Modell konfiguriert. Bitte in den Einstellungen ein Modell eintragen."
+        return tr("No language model configured. Set a model in Settings.")
     base_url = base_url.rstrip("/")
     if provider == "ollama-cloud" and not base_url:
         base_url = CLOUD_DEFAULT_BASE
@@ -436,10 +443,14 @@ def chat(
         else:
             messages.append({"role": "system", "content": safety_note})
     executed = 0
+    request_started = False
     search_fallback = ""
     user_content = prompt
     if web_search_enabled and FRESH_INFO_PATTERN.search(prompt):
         try:
+            query_preview = _dated_search_query(prompt, local_now)[:60]
+            report_status(tr("Web search: {query}{ellipsis}", query=query_preview,
+                             ellipsis="…" if len(query_preview) == 60 else ""))
             results = _search_fresh_info(prompt, local_now, search=search)
             if cancelled():
                 return ""
@@ -457,6 +468,9 @@ def chat(
     while True:
         if cancelled():
             return ""
+        report_status(tr("Sending prompt to model …") if not request_started
+                  else tr("Model is processing results …"))
+        request_started = True
         available_tools = [tool for tool in tool_definitions
                    if tool["name"] != "input_control" or not input_control_attempted]
         try:
@@ -478,6 +492,9 @@ def chat(
             answer = str(message.get("content") or "").strip()
             if web_search_enabled and not search_fallback and (not answer or LIVE_INFO_REFUSAL_PATTERN.search(answer)):
                 try:
+                    query_preview = _dated_search_query(prompt, local_now)[:60]
+                    report_status(tr("Web search: {query}{ellipsis}", query=query_preview,
+                                     ellipsis="…" if len(query_preview) == 60 else ""))
                     results = _search_fresh_info(prompt, local_now, search=search)
                     if cancelled():
                         return ""
@@ -513,6 +530,15 @@ def chat(
                 else:
                     if function_name == "input_control":
                         input_control_attempted = True
+                        action_name = _arguments(call.get("function", {}).get("arguments", {})).get("action", "")
+                        report_status(tr("Controller action: {action} …", action=action_name)
+                                      if action_name else tr("Controller action …"))
+                    elif function_name == "web_search":
+                        query = str(_arguments(call.get("function", {}).get("arguments", {})).get("query", ""))
+                        query_preview = query[:60]
+                        report_status(tr("Web search: {query}{ellipsis}", query=query_preview,
+                                         ellipsis="…" if len(query) > 60 else "")
+                                      if query_preview else tr("Web search in progress …"))
                     result = _execute_tool(call, enabled_tool_names, input_action_entries, search=search)
                 executed += 1
             if cancelled():

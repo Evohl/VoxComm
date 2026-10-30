@@ -116,6 +116,19 @@ class StreamingTests(unittest.TestCase):
         self.assertEqual(deltas, [])
         stream.assert_not_called()
 
+    @patch("voxcomm.providers.llm.httpx.post")
+    @patch("voxcomm.providers.llm.search_web", return_value=[])
+    def test_chat_reports_prompt_and_automatic_web_search_activity(self, search, post):
+        post.return_value = Mock(json=Mock(return_value={"message": {"content": "Erledigt"}}))
+        statuses = []
+
+        chat("ollama", "http://h:11434", "m", "Wie ist das Wetter heute?",
+             enabled_tools=["web_search"], on_status=statuses.append)
+
+        self.assertTrue(statuses[0].startswith("Web search: Wie ist das Wetter "))
+        self.assertEqual(statuses[1], "Sending prompt to model …")
+        search.assert_called_once()
+
     @patch("voxcomm.providers.llm.press_gamepad_button", return_value="Button3")
     @patch("voxcomm.providers.llm.httpx.stream")
     def test_streamed_tool_call_is_executed_and_followed_by_a_streamed_reply(self, stream, press):
@@ -125,16 +138,19 @@ class StreamingTests(unittest.TestCase):
             FakeStreamResponse(_ndjson({"content": "Fahrwerk ausgefahren."})),
         ]
         deltas = []
+        statuses = []
 
         answer = chat(
             "ollama", "http://h:11434", "m", "Bitte das Fahrwerk ausfahren, wenn m\u00f6glich",
             enabled_tools=["input_control"],
             input_actions="Gear On => gear down => Button3 => Gear extended\nGear Off => gear up => Button4 => Gear retracted",
             on_text=deltas.append,
+            on_status=statuses.append,
         )
 
         self.assertEqual(answer, "Fahrwerk ausgefahren.")
         self.assertEqual(deltas, ["Fahrwerk ausgefahren."])
+        self.assertEqual(statuses, ["Sending prompt to model …", "Controller action: Gear On …", "Model is processing results …"])
         press.assert_called_once_with("Button3")
 
 
@@ -569,8 +585,8 @@ class OllamaCloudTests(unittest.TestCase):
 
         answer = chat("ollama-cloud", "https://ollama.com", "gpt-oss:20b", "hi", api_key="bad")
 
-        self.assertIn("API-Schlüssel", answer)
-        self.assertIn("ungültig", answer)
+        self.assertIn("API key", answer)
+        self.assertIn("invalid", answer)
 
     def test_empty_cloud_url_falls_back_to_public_base(self):
         with patch("voxcomm.providers.cloud.httpx.post") as post:

@@ -11,6 +11,7 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
             original = AppConfig(
+                ui_language="de",
                 stt_language="en",
                 auto_speak=True,
                 global_prompt="Custom global prompt",

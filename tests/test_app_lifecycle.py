@@ -104,11 +104,27 @@ class ApplicationLifecycleTests(unittest.TestCase):
 
             self.assertTrue(previous_request.is_set())
             self.assertFalse(new_request.is_set())
-            overlay._show_request_message("Veraltete Antwort", "Du: Wie macht die Kuh?\n", previous_request)
-            self.assertIn("Aufnahme läuft", overlay.status.text())
+            overlay._show_request_message("Stale response", "You: How does the cow sound?\n", previous_request)
+            self.assertIn("Recording", overlay.status.text())
 
-            overlay._show_request_message("Denke nach …", "Du: Wetter morgen?\n", new_request)
-            self.assertEqual(overlay._typing_text, "Du: Wetter morgen?\n")
+            overlay._show_request_message("Thinking …", "You: Weather tomorrow?\n", new_request)
+            self.assertEqual(overlay._typing_text, "You: Weather tomorrow?\n")
+            overlay.listener.stop()
+            overlay.tray_icon.hide()
+            overlay.deleteLater()
+
+    def test_activity_replaces_thinking_status_and_ignores_cancelled_requests(self):
+        app = QApplication.instance() or QApplication([])
+        with patch("voxcomm.app.PttListener"):
+            overlay = Overlay()
+            active_request = threading.Event()
+            cancelled_request = threading.Event()
+            cancelled_request.set()
+
+            overlay._show_activity("Web search: weather", active_request)
+            self.assertEqual(overlay.status.text(), "Web search: weather")
+            overlay._show_activity("Stale activity", cancelled_request)
+            self.assertEqual(overlay.status.text(), "Web search: weather")
             overlay.listener.stop()
             overlay.tray_icon.hide()
             overlay.deleteLater()
@@ -117,17 +133,17 @@ class ApplicationLifecycleTests(unittest.TestCase):
         app = QApplication.instance() or QApplication([])
         with patch("voxcomm.app.PttListener"), patch("voxcomm.app.threading.Thread"):
             overlay = Overlay()
-            overlay._show_message("Bereit · Antwort lokal erzeugt", "Du: Wie macht die Kuh?\nA.I.: Muh")
+            overlay._show_message("Ready · response generated locally", "You: How does the cow sound?\nAI: Moo")
             overlay._type_next_character()
 
             overlay._ptt_event("pressed", "")
 
             self.assertFalse(overlay._type_timer.isActive())
             self.assertEqual(overlay.transcript.toPlainText(), "")
-            overlay._show_message("Denke nach …", "Du: Wetter morgen?\n")
+            overlay._show_message("Thinking …", "You: Weather tomorrow?\n")
             while overlay._type_timer.isActive():
                 overlay._type_next_character()
-            self.assertEqual(overlay.transcript.toPlainText(), "Du: Wetter morgen?\n")
+            self.assertEqual(overlay.transcript.toPlainText(), "You: Weather tomorrow?\n")
             overlay.listener.stop()
             overlay.tray_icon.hide()
             overlay.deleteLater()
@@ -138,16 +154,16 @@ class ApplicationLifecycleTests(unittest.TestCase):
             overlay = Overlay()
             overlay._tray_activated(QSystemTrayIcon.ActivationReason.Trigger)
             self.assertTrue(overlay._recording)
-            self.assertEqual(overlay.tray_toggle_action.text(), "Aufnahme senden")
+            self.assertEqual(overlay.tray_toggle_action.text(), "Send recording")
             first_stop = thread_class.call_args.kwargs["args"][0]
 
             overlay._tray_activated(QSystemTrayIcon.ActivationReason.Trigger)
             self.assertFalse(overlay._recording)
             self.assertTrue(first_stop.is_set())
-            self.assertEqual(overlay.tray_toggle_action.text(), "Aufnahme starten")
+            self.assertEqual(overlay.tray_toggle_action.text(), "Start recording")
             self.assertEqual(
                 [action.text() for action in overlay.tray_menu.actions() if not action.isSeparator()],
-                ["Aufnahme starten", "Einstellungen …", "Letzte Antwort erneut vorlesen", "Beenden"],
+                ["Start recording", "Settings …", "Read last response aloud again", "Quit"],
             )
             self.assertFalse(any(action.menu() for action in overlay.tray_menu.actions()))
             overlay.listener.stop()
@@ -263,7 +279,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
         self.assertEqual(dialog.profile_hotkey.value(), "")
         dialog.profile_hotkey._apply("f9")
         self.assertEqual(dialog.profile_hotkey.value(), "")
-        self.assertIn("Push-to-talk", dialog.discovery_status.text())
+        self.assertIn("push-to-talk", dialog.discovery_status.text())
         dialog.profile_hotkey._apply("f11")
         self.assertEqual(dialog.profile_hotkey.value(), "")
         self.assertIn("Elite", dialog.discovery_status.text())
@@ -346,7 +362,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
 
             transcribe.assert_not_called()
             chat.assert_not_called()
-            self.assertEqual(overlay.status.text(), "Bereit · Aufnahme zu kurz")
+            self.assertEqual(overlay.status.text(), "Ready · recording too short")
             overlay.listener.stop()
             overlay.tray_icon.hide()
             overlay.deleteLater()
@@ -358,7 +374,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
             active_request = threading.Event()
             with overlay._request_cancellations_lock:
                 overlay._request_cancellations.add(active_request)
-            overlay._show_message("Antwort", "A.I.: laufende Ausgabe")
+            overlay._show_message("Answer", "AI: current output")
             self.assertTrue(overlay._type_timer.isActive())
 
             with patch("voxcomm.app.time.monotonic", side_effect=[1.0, 1.199]):
@@ -368,9 +384,9 @@ class ApplicationLifecycleTests(unittest.TestCase):
             self.assertTrue(active_request.is_set())
             self.assertFalse(overlay._type_timer.isActive())
             self.assertEqual(overlay.transcript.toPlainText(), "")
-            self.assertEqual(overlay.status.text(), "Bereit · Anfrage abgebrochen")
-            overlay._show_request_message("Veraltete Antwort", "A.I.: nicht anzeigen", active_request)
-            self.assertEqual(overlay.status.text(), "Bereit · Anfrage abgebrochen")
+            self.assertEqual(overlay.status.text(), "Ready · request cancelled")
+            overlay._show_request_message("Stale response", "AI: do not show", active_request)
+            self.assertEqual(overlay.status.text(), "Ready · request cancelled")
             self.assertEqual(overlay.transcript.toPlainText(), "")
             overlay.listener.stop()
             overlay.tray_icon.hide()
@@ -514,8 +530,8 @@ class ApplicationLifecycleTests(unittest.TestCase):
         with patch("voxcomm.app.PttListener"), patch("voxcomm.app.threading.Thread"):
             overlay = Overlay()
             overlay.show()
-            full_text = "Du: Test?\nA.I.: Antwort"
-            overlay._show_message("Bereit · Antwort lokal erzeugt", full_text)
+            full_text = "You: Test?\nAI: Answer"
+            overlay._show_message("Ready · response generated locally", full_text)
             while overlay._type_timer.isActive():
                 overlay._type_next_character()
             overlay._hide_timer.timeout.emit()
@@ -548,7 +564,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
 
             self.assertTrue(speech_cancel.is_set())
             self.assertTrue(overlay._recording)
-            self.assertEqual(overlay.status.text().split(" · ")[0], "Aufnahme läuft")
+            self.assertEqual(overlay.status.text().split(" · ")[0], "Recording")
             overlay.listener.stop()
             overlay.deleteLater()
 
@@ -702,22 +718,22 @@ class ApplicationLifecycleTests(unittest.TestCase):
         with patch("voxcomm.app.PttListener"):
             overlay = Overlay()
             overlay.show()
-            text = "Du: Frage?\nA.I.: Antwort"
-            overlay._show_message("Bereit · Antwort lokal erzeugt", text)
+            text = "You: Question?\nAI: Answer"
+            overlay._show_message("Ready · response generated locally", text)
             while overlay._type_timer.isActive():
                 overlay._type_next_character()
 
             self.assertEqual(overlay.transcript.toPlainText(), text)
-            self.assertEqual(overlay._last_response, "Antwort")
+            self.assertEqual(overlay._last_response, "Answer")
 
             def color_at(index):
                 cursor = overlay.transcript.textCursor()
                 cursor.setPosition(index + 1)
                 return cursor.charFormat().foreground().color().name()
 
-            user_color = color_at(text.index("Frage"))
-            ai_label_color = color_at(text.index("A.I."))
-            ai_color = color_at(text.index("Antwort"))
+            user_color = color_at(text.index("Question"))
+            ai_label_color = color_at(text.index("AI:"))
+            ai_color = color_at(text.index("Answer"))
             self.assertEqual(ai_label_color, system_accent().name())
             self.assertNotEqual(user_color, ai_color)
             self.assertNotEqual(user_color, ai_label_color)
@@ -725,10 +741,10 @@ class ApplicationLifecycleTests(unittest.TestCase):
             overlay.deleteLater()
 
     def test_transcript_segments_reassemble_original_text(self):
-        for text in ("Du: Frage?\nA.I.: Antwort", "Du: Frage?\n", "Nur Text", "Du: A.I.: ohne Zeilenumbruch"):
+        for text in ("You: Question?\nAI: Answer", "You: Question?\n", "Plain text", "You: AI: without line break"):
             self.assertEqual("".join(chunk for chunk, _ in transcript_segments(text)), text)
         self.assertEqual(
-            [kind for _, kind in transcript_segments("Du: Frage?\nA.I.: Antwort")],
+            [kind for _, kind in transcript_segments("You: Question?\nAI: Answer")],
             ["user_label", "user", "ai_label", "ai"],
         )
 
@@ -769,16 +785,25 @@ class ApplicationLifecycleTests(unittest.TestCase):
         titles = [label.text() for label in dialog.findChildren(QLabel, "sectionTitle")]
         self.assertEqual(
             sorted(titles),
-            sorted(["EINGABE", "SPRACHERKENNUNG", "SPRACHMODELL", "SPRACHAUSGABE", "PROMPT", "VOXCOMM-CONTROLLER"]),
+            sorted(["INPUT", "SPEECH RECOGNITION", "LANGUAGE MODEL", "SPEECH OUTPUT", "PROMPT", "VOXCOMM CONTROLLER"]),
         )
         sections = dialog.findChildren(QFrame, "section")
         self.assertEqual(len(sections), 6)
         self.assertEqual(dialog.input_action_catalog.rowCount(), 100)
         self.assertTrue(dialog.action_catalog_section.isHidden())
         self.assertIn(system_accent().name(), dialog.styleSheet())
-        self.assertEqual(dialog.findChild(QPushButton, "primary").text(), "Speichern")
+        self.assertEqual(dialog.findChild(QPushButton, "primary").text(), "Save")
         for field in (dialog.stt, dialog.tts, dialog.llm_url, dialog.key, dialog.special_prompt):
             self.assertTrue(any(section.isAncestorOf(field) for section in sections))
+
+    def test_settings_dialog_loads_the_configured_translation(self):
+        app = QApplication.instance() or QApplication([])
+        config = AppConfig(ui_language="de")
+        dialog = SettingsDialog(config)
+
+        self.assertEqual(dialog.findChild(QLabel, "dialogTitle").text(), "Einstellungen")
+        self.assertEqual(dialog.web_search.text(), "Websuche erlauben")
+        self.assertEqual(dialog.apply(config).ui_language, "de")
 
     def test_settings_dialog_is_not_parented_to_the_overlay(self):
         app = QApplication.instance() or QApplication([])
@@ -833,7 +858,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
             Overlay._start_gamepad(overlay)
 
         overlay._set_status.assert_called_once()
-        self.assertIn("Controller nicht verfügbar", overlay._set_status.call_args.args[0])
+        self.assertIn("Controller unavailable", overlay._set_status.call_args.args[0])
 
     def test_discovery_buttons_are_icon_only_with_tooltips(self):
         app = QApplication.instance() or QApplication([])
@@ -843,7 +868,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
             self.assertIsInstance(button, QToolButton)
             self.assertFalse(button.icon().isNull())
             self.assertEqual(button.text(), "")
-            self.assertIn("laden", button.toolTip())
+            self.assertIn("Load", button.toolTip())
             self.assertEqual(button.width(), button.height())
 
     def test_settings_save_global_prompt_and_auto_speak(self):
@@ -891,9 +916,9 @@ class ApplicationLifecycleTests(unittest.TestCase):
         app = QApplication.instance() or QApplication([])
         with patch("voxcomm.app.PttListener"), patch("voxcomm.app.publish_status") as publish:
             overlay = Overlay()
-            overlay._show_message("Bereit · Antwort lokal erzeugt", 'Du: Flight ready\nA.I.: "Right Alt + R gesendet."')
+            overlay._show_message("Ready · response generated locally", 'You: Flight ready\nAI: "Right Alt + R sent."')
 
-            self.assertEqual(publish.call_args.args[0], 'Du: Flight ready\nA.I.: "Right Alt + R gesendet."')
+            self.assertEqual(publish.call_args.args[0], 'You: Flight ready\nAI: "Right Alt + R sent."')
             overlay.listener.stop()
             overlay.tray_icon.hide()
             overlay.deleteLater()
@@ -903,13 +928,13 @@ class ApplicationLifecycleTests(unittest.TestCase):
         with patch("voxcomm.app.PttListener"), patch("voxcomm.app.publish_status") as publish:
             with patch("voxcomm.app.threading.Thread"):
                 overlay = Overlay()
-                expected = 'Du: Flight ready\nA.I.: "Right Alt + R gesendet."'
-                overlay._show_message("Bereit · Antwort lokal erzeugt", 'Du: Flight ready\nA.I.: "Right Alt + R gesendet."')
+                expected = 'You: Flight ready\nAI: "Right Alt + R sent."'
+                overlay._show_message("Ready · response generated locally", 'You: Flight ready\nAI: "Right Alt + R sent."')
 
                 overlay._start_speak('"Right Alt + R gesendet."')
                 self.assertEqual(publish.call_args.args[0], expected)
 
-                overlay._show_message("Bereit · PTT zum Sprechen", "")
+                overlay._show_message("Ready · press PTT to speak", "")
                 self.assertEqual(publish.call_args.args[0], expected)
                 overlay.listener.stop()
                 overlay.tray_icon.hide()
@@ -1014,7 +1039,7 @@ class ProviderSelectionTests(unittest.TestCase):
         listing.assert_not_called()
         self.assertEqual([dialog.model.itemText(index) for index in range(dialog.model.count())], ["m1", "m2"])
         self.assertEqual(dialog.model.currentText(), "m2")
-        self.assertIn("Zwischenspeicher", dialog.discovery_status.text())
+        self.assertIn("cache", dialog.discovery_status.text())
 
     def test_stale_cloud_cache_triggers_refresh(self):
         app = QApplication.instance() or QApplication([])
@@ -1091,16 +1116,16 @@ class ProviderSelectionTests(unittest.TestCase):
 
             dialog.key_test.click()
             self.assertFalse(dialog.key_test.isEnabled())
-            self.assertIn("Prüfe", dialog.discovery_status.text())
+            self.assertIn("Verifying", dialog.discovery_status.text())
             thread_class.assert_called()
             self.assertEqual(thread_class.call_args.kwargs["target"].__name__, "run")
 
         dialog.discovery.discovery.emit("key", [], "")
         self.assertTrue(dialog.key_test.isEnabled())
-        self.assertEqual(dialog.discovery_status.text(), "API-Schlüssel gültig")
+        self.assertEqual(dialog.discovery_status.text(), "API key is valid")
 
         dialog.discovery.discovery.emit("key", [], "401")
-        self.assertIn("API-Schlüssel ungültig", dialog.discovery_status.text())
+        self.assertIn("Invalid API key", dialog.discovery_status.text())
 
     def test_openai_voice_listing_is_not_language_filtered(self):
         app = QApplication.instance() or QApplication([])
@@ -1189,10 +1214,10 @@ class ProviderSelectionTests(unittest.TestCase):
         dialog = SettingsDialog(AppConfig(llm_model="gemma4", llm_thinking="off"))
 
         self.assertEqual(dialog.thinking.currentData(), "off")
-        self.assertEqual(dialog.thinking.currentText(), "Aus")
+        self.assertEqual(dialog.thinking.currentText(), "Off")
         dialog._apply_thinking_options(dialog._thinking_token, ["off", "on"])
         self.assertEqual([dialog.thinking.itemText(i) for i in range(dialog.thinking.count())],
-                         ["Modell-Standard", "Aus", "An"])
+                         ["Model default", "Off", "On"])
         self.assertEqual(dialog.thinking.currentData(), "off")
 
         dialog._apply_thinking_options(dialog._thinking_token, ["low", "medium", "high"])
@@ -1213,7 +1238,7 @@ class ProviderSelectionTests(unittest.TestCase):
         dialog._apply_thinking_options(dialog._thinking_token, [])
 
         self.assertFalse(dialog.thinking.isEnabled())
-        self.assertEqual(dialog.thinking.currentText(), "Vom Modell nicht steuerbar")
+        self.assertEqual(dialog.thinking.currentText(), "Not controlled by model")
         self.assertEqual(dialog.apply(AppConfig()).llm_thinking, "high")
         dialog._apply_thinking_options(dialog._thinking_token, ["low", "medium", "high"])
         self.assertTrue(dialog.thinking.isEnabled())
