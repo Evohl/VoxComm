@@ -28,6 +28,7 @@ class ConfigTests(unittest.TestCase):
                     "Star Citizen": "flight ready|systeme bereit => RIGHTALT + R => Flight ready",
                 },
                 active_special_prompt="Star Citizen",
+                llm_thinking_overrides={"__global__": "low", "Star Citizen": "high"},
             )
             save_config(original, path)
             self.assertEqual(load_config(path), original)

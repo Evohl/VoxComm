@@ -98,6 +98,7 @@ def dialog_stylesheet(accent: QColor, surface: QColor, text: QColor) -> str:
         QLabel#dialogTitle {{ font-size: 18px; font-weight: 700; }}
         QLabel#sectionTitle {{ color: {accent.name()}; font-size: 11px; font-weight: 700; }}
         QLabel#hint {{ color: {rgba(text, 150)}; }}
+        QTabWidget::pane {{ border: none; }}
         QFrame#section {{ background-color: {rgba(text, 9)}; border: 1px solid {rgba(accent, 70)}; border-radius: 12px; }}
         QLineEdit, QSpinBox, QComboBox, QPlainTextEdit {{
             background-color: {field}; color: {text.name()}; border: 1px solid {rgba(text, 45)};

@@ -32,6 +32,7 @@ class AppConfig:
     llm_url: str = "http://127.0.0.1:11434"
     llm_model: str = ""
     llm_thinking: str = ""
+    llm_thinking_overrides: dict[str, str] = field(default_factory=dict)
     ollama_api_key: str = ""
     ptt_key: str = "F9"
     sample_rate: int = 16000
@@ -80,11 +81,13 @@ def save_config(config: AppConfig, path: Path | None = None) -> None:
     hotkeys = values.pop("special_hotkeys")
     enabled_tools = values.pop("enabled_tools")
     input_action_catalogs = values.pop("input_action_catalogs")
+    thinking_overrides = values.pop("llm_thinking_overrides")
     rows = [f"{key} = {json.dumps(value, ensure_ascii=True)}" if isinstance(value, str)
             else f"{key} = {str(value).lower() if isinstance(value, bool) else value}"
             for key, value in values.items() if value is not None]
     for table, entries in (("special_prompts", prompts), ("special_hotkeys", hotkeys),
-                           ("enabled_tools", enabled_tools), ("input_action_catalogs", input_action_catalogs)):
+                           ("enabled_tools", enabled_tools), ("input_action_catalogs", input_action_catalogs),
+                           ("llm_thinking_overrides", thinking_overrides)):
         if entries:
             rows.extend(["", f"[{table}]"])
             rows.extend(f"{json.dumps(name, ensure_ascii=True)} = {json.dumps(value, ensure_ascii=True)}"

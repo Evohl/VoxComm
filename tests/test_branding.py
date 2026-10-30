@@ -54,7 +54,8 @@ class BrandingTests(unittest.TestCase):
 
         apply_app_identity(app)
 
-        self.assertEqual(app.applicationName(), APP_NAME)
+        self.assertEqual(app.applicationName(), APP_ID)
+        self.assertEqual(app.applicationDisplayName(), APP_NAME)
         self.assertEqual(QGuiApplication.desktopFileName(), APP_ID)
         self.assertFalse(app.windowIcon().isNull())
 

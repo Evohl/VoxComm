@@ -11,7 +11,8 @@ from PySide6.QtGui import QAction, QFont, QGuiApplication, QTextCharFormat
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFormLayout, QFrame, QGraphicsOpacityEffect,
     QHBoxLayout, QLabel, QInputDialog, QLineEdit, QMainWindow, QMenu, QMessageBox,
-    QPlainTextEdit, QPushButton, QSpinBox, QSystemTrayIcon, QTextEdit, QToolButton, QVBoxLayout, QWidget,
+    QPlainTextEdit, QPushButton, QSpinBox, QSystemTrayIcon, QTabWidget, QTableWidget,
+    QTableWidgetItem, QTextEdit, QToolButton, QVBoxLayout, QWidget,
 )
 
 from voxcomm.audio import play_stream, prefetch, record_until_released, save_wav
@@ -277,14 +278,19 @@ class SettingsDialog(QDialog):
         self.input_control = QCheckBox("VoxComm-Controlleraktionen erlauben")
         self.input_control.setToolTip("Erlaubt diesem Profil ausschließlich konfigurierte On/Off-Schalter über den virtuellen VoxComm-Controller.")
         self.input_control.setChecked("input_control" in self.enabled_tools.get(active_profile, []))
-        self.input_action_catalog = QPlainTextEdit(self.input_action_catalogs.get(active_profile, ""))
-        self.input_action_catalog.setPlaceholderText(
-            "Aktionsname On/Off => Stichwort(e) => ButtonN => kurze Rueckmeldung\n"
-            "Flight Systems On => flight ready|systeme ein => Button1 => Flight Systems eingeschaltet\n"
-            "Flight Systems Off => flight systems off|systeme aus => Button2 => Flight Systems ausgeschaltet"
-        )
-        self.input_action_catalog.setMaximumBlockCount(80)
-        self.input_action_catalog.setMinimumHeight(105)
+        self.input_action_catalog = QTableWidget(100, 4)
+        self.input_action_catalog.setHorizontalHeaderLabels(["Button", "Aktion (On/Off)", "Stichwörter", "Rückmeldung"])
+        self.input_action_catalog.verticalHeader().setVisible(False)
+        self.input_action_catalog.setMinimumHeight(280)
+        self.input_action_catalog.setMaximumHeight(360)
+        self.input_action_catalog.setAlternatingRowColors(True)
+        self.input_action_catalog.setColumnWidth(1, 180)
+        self.input_action_catalog.setColumnWidth(2, 300)
+        self.input_action_catalog.horizontalHeader().setStretchLastSection(True)
+        self._load_input_action_catalog(self.input_action_catalogs.get(active_profile, ""))
+        self.action_catalog_section = self._section("VoxComm-Controller", [("Aktionsverzeichnis", self.input_action_catalog)])
+        self.action_catalog_section.setVisible(self.input_control.isChecked())
+        self.input_control.toggled.connect(self.action_catalog_section.setVisible)
         initial_prompt = config.global_prompt if active_profile == "__global__" else self.special_prompts.get(active_profile, "")
         self.special_prompt = QPlainTextEdit(initial_prompt)
         self.special_prompt.setPlaceholderText("Globaler Basis-Prompt" if active_profile == "__global__" else "Aufgabenwissen und Verhaltensregeln für dieses Profil")
@@ -322,6 +328,14 @@ class SettingsDialog(QDialog):
         self.model.setEditable(True)
         self.model.setCurrentText(config.llm_model)
         self._thinking_setting = config.llm_thinking
+        self._thinking_overrides = dict(config.llm_thinking_overrides)
+        self._thinking_options: list[str] = []
+        self.profile_thinking = QComboBox()
+        self.profile_thinking.addItem("Globaler Standard", "")
+        profile_thinking = self._thinking_overrides.get(active_profile, "")
+        if profile_thinking:
+            self.profile_thinking.addItem(THINKING_LABELS.get(profile_thinking, profile_thinking.capitalize()), profile_thinking)
+            self.profile_thinking.setCurrentIndex(1)
         self._thinking_token = 0
         self._thinking_shown = False
         self.thinking = QComboBox()
@@ -378,10 +392,6 @@ class SettingsDialog(QDialog):
             ("Overlay-Anzeigedauer", self.overlay_hide_seconds),
             (None, self.tray_mode), (None, self.reset_position),
         ]))
-        self.stt_section = self._section("Spracherkennung", [
-            ("Schnittstelle", self.stt_provider), ("URL", self.stt), ("Erkennungssprache", self.stt_language),
-        ])
-        left.addWidget(self.stt_section)
         self.llm_section = self._section("Sprachmodell", [
             ("Anbieter", self.provider), ("URL", self.llm_url), ("Modell", model_row),
             ("Denkmodus", self.thinking), ("API-Schlüssel", self.key_row),
@@ -390,21 +400,38 @@ class SettingsDialog(QDialog):
         left.addStretch(1)
         right = QVBoxLayout()
         right.setSpacing(14)
+        self.stt_section = self._section("Spracherkennung", [
+            ("Schnittstelle", self.stt_provider), ("URL", self.stt), ("Erkennungssprache", self.stt_language),
+        ])
+        right.addWidget(self.stt_section)
         self.tts_section = self._section("Sprachausgabe", [
             ("Schnittstelle", self.tts_provider), ("URL", self.tts), ("TTS-Sprache", self.tts_language),
             ("Stimmen-Sprache", self.voice_language), ("Stimme", voice_row),
             ("Antwortsprache", self.response_language), (None, self.auto_speak),
         ])
         right.addWidget(self.tts_section)
-        right.addWidget(self._section("Prompt", [
-            ("Profil", self.special_profile), (None, profile_row), ("Profil-Hotkey", self.profile_hotkey),
-            (None, self.web_search), (None, self.input_control),
-            ("Aktionsverzeichnis", self.input_action_catalog), (None, self.special_prompt),
-        ]), 1)
+        right.addStretch(1)
         columns = QHBoxLayout()
         columns.setSpacing(14)
         columns.addLayout(left, 1)
         columns.addLayout(right, 1)
+        global_tab = QWidget()
+        global_layout = QVBoxLayout(global_tab)
+        global_layout.setContentsMargins(0, 0, 0, 0)
+        global_layout.addLayout(columns, 1)
+        prompt_tab = QWidget()
+        prompt_layout = QVBoxLayout(prompt_tab)
+        prompt_layout.setContentsMargins(0, 0, 0, 0)
+        prompt_layout.addWidget(self._section("Prompt", [
+            ("Profil", self.special_profile), ("", profile_row), ("Profil-Hotkey", self.profile_hotkey),
+            ("Denkmodus-Override", self.profile_thinking),
+            (None, self.web_search), (None, self.input_control),
+            (None, self.special_prompt),
+        ]), 1)
+        prompt_layout.addWidget(self.action_catalog_section)
+        settings_tabs = QTabWidget()
+        settings_tabs.addTab(global_tab, "Global Settings")
+        settings_tabs.addTab(prompt_tab, "Prompt Settings")
         title = QLabel("Einstellungen")
         title.setObjectName("dialogTitle")
         self.discovery_status = QLabel("Stimmen und Modelle lassen sich über das Aktualisieren-Symbol vom Dienst laden")
@@ -435,7 +462,7 @@ class SettingsDialog(QDialog):
         root.setContentsMargins(20, 18, 20, 18)
         root.setSpacing(14)
         root.addWidget(title)
-        root.addLayout(columns, 1)
+        root.addWidget(settings_tabs, 1)
         root.addLayout(footer)
 
     def _refresh_button(self, tooltip: str) -> QToolButton:
@@ -479,6 +506,7 @@ class SettingsDialog(QDialog):
             self._lookup_thinking()
 
     def _fill_thinking(self, options: list[str], known: bool = False):
+        self._thinking_options = list(options)
         selected = self._thinking_setting
         self.thinking.clear()
         self.thinking.addItem("Modell-Standard", "")
@@ -491,6 +519,26 @@ class SettingsDialog(QDialog):
             self.thinking.addItem(THINKING_LABELS.get(selected, selected.capitalize()), selected)
         self.thinking.setEnabled(not known or bool(options))
         self.thinking.setCurrentIndex(max(self.thinking.findData(selected), 0))
+        self._fill_profile_thinking()
+
+    def _fill_profile_thinking(self):
+        selected = self._thinking_overrides.get(self._active_profile_name, "")
+        self.profile_thinking.blockSignals(True)
+        self.profile_thinking.clear()
+        self.profile_thinking.addItem("Globaler Standard", "")
+        for option in self._thinking_options:
+            self.profile_thinking.addItem(THINKING_LABELS.get(option, option.capitalize()), option)
+        if selected and selected not in self._thinking_options:
+            self.profile_thinking.addItem(THINKING_LABELS.get(selected, selected.capitalize()), selected)
+        self.profile_thinking.setCurrentIndex(max(self.profile_thinking.findData(selected), 0))
+        self.profile_thinking.blockSignals(False)
+
+    def _store_profile_thinking(self):
+        selected = self.profile_thinking.currentData() or ""
+        if selected:
+            self._thinking_overrides[self._active_profile_name] = selected
+        else:
+            self._thinking_overrides.pop(self._active_profile_name, None)
 
     def _lookup_thinking(self):
         self._thinking_token += 1
@@ -611,6 +659,7 @@ class SettingsDialog(QDialog):
     def _store_special_profile(self):
         self._store_enabled_tools()
         self._store_input_action_catalog()
+        self._store_profile_thinking()
         if self._active_profile_name == "__global__":
             self._global_prompt = self.special_prompt.toPlainText().strip()
             return
@@ -620,11 +669,41 @@ class SettingsDialog(QDialog):
     def _store_input_action_catalog(self):
         if self._active_profile_name not in self.special_prompts and self._active_profile_name != "__global__":
             return
-        catalog = self.input_action_catalog.toPlainText().strip()
+        entries = []
+        for row in range(self.input_action_catalog.rowCount()):
+            action, keywords, reply = [
+                (self.input_action_catalog.item(row, column).text().strip()
+                 if self.input_action_catalog.item(row, column) else "")
+                for column in range(1, 4)
+            ]
+            if action or keywords or reply:
+                entries.append(f"{action} => {keywords} => Button{row + 1} => {reply}")
+        catalog = "\n".join(entries)
         if catalog:
             self.input_action_catalogs[self._active_profile_name] = catalog
         else:
             self.input_action_catalogs.pop(self._active_profile_name, None)
+
+    def _load_input_action_catalog(self, catalog: str):
+        self.input_action_catalog.clearContents()
+        for line in catalog.splitlines():
+            parts = [part.strip() for part in line.split("=>")]
+            if len(parts) != 4 or not parts[2].casefold().startswith("button"):
+                continue
+            try:
+                row = int(parts[2][6:]) - 1
+            except ValueError:
+                continue
+            if not 0 <= row < self.input_action_catalog.rowCount():
+                continue
+            for column, value in enumerate((parts[2], parts[0], parts[1], parts[3])):
+                self.input_action_catalog.setItem(row, column, QTableWidgetItem(value))
+            self.input_action_catalog.item(row, 0).setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        for row in range(self.input_action_catalog.rowCount()):
+            if self.input_action_catalog.item(row, 0) is None:
+                button_item = QTableWidgetItem(f"Button{row + 1}")
+                button_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                self.input_action_catalog.setItem(row, 0, button_item)
 
     def _store_enabled_tools(self):
         if self._active_profile_name in self.special_prompts or self._active_profile_name == "__global__":
@@ -647,8 +726,9 @@ class SettingsDialog(QDialog):
             prompt = self.special_prompts.get(self._active_profile_name, "")
         self.web_search.setChecked("web_search" in self.enabled_tools.get(self._active_profile_name, []))
         self.input_control.setChecked("input_control" in self.enabled_tools.get(self._active_profile_name, []))
-        self.input_action_catalog.setPlainText(self.input_action_catalogs.get(self._active_profile_name, ""))
+        self._load_input_action_catalog(self.input_action_catalogs.get(self._active_profile_name, ""))
         self.special_prompt.setPlainText(prompt)
+        self._fill_profile_thinking()
         self.special_prompt.setPlaceholderText("Globaler Basis-Prompt" if self._active_profile_name == "__global__" else "Aufgabenwissen und Verhaltensregeln für dieses Profil")
         self._update_profile_controls()
 
@@ -675,8 +755,9 @@ class SettingsDialog(QDialog):
             prompt = self.special_prompts.get(self._active_profile_name, "")
         self.web_search.setChecked("web_search" in self.enabled_tools.get(self._active_profile_name, []))
         self.input_control.setChecked("input_control" in self.enabled_tools.get(self._active_profile_name, []))
-        self.input_action_catalog.setPlainText(self.input_action_catalogs.get(self._active_profile_name, ""))
+        self._load_input_action_catalog(self.input_action_catalogs.get(self._active_profile_name, ""))
         self.special_prompt.setPlainText(prompt)
+        self._fill_profile_thinking()
         self.special_prompt.setPlaceholderText("Globaler Basis-Prompt" if self._active_profile_name == "__global__" else "Aufgabenwissen und Verhaltensregeln für dieses Profil")
         self._update_profile_controls()
 
@@ -711,6 +792,8 @@ class SettingsDialog(QDialog):
             self.special_hotkeys[name] = self.special_hotkeys.pop(current)
         if current in self.input_action_catalogs:
             self.input_action_catalogs[name] = self.input_action_catalogs.pop(current)
+        if current in self._thinking_overrides:
+            self._thinking_overrides[name] = self._thinking_overrides.pop(current)
         self._refresh_special_profiles(name)
 
     def _remove_special_profile(self):
@@ -725,6 +808,7 @@ class SettingsDialog(QDialog):
         self.enabled_tools.pop(current, None)
         self.special_hotkeys.pop(current, None)
         self.input_action_catalogs.pop(current, None)
+        self._thinking_overrides.pop(current, None)
         self._refresh_special_profiles("")
 
     def _discover(self, kind: str):
@@ -825,6 +909,8 @@ class SettingsDialog(QDialog):
         config.enabled_tools = {name: [tool for tool in ("web_search", "input_control") if tool in tools]
                 for name, tools in self.enabled_tools.items()
                 if name in allowed_tool_profiles and tools}
+        config.llm_thinking_overrides = {name: value for name, value in self._thinking_overrides.items()
+                        if name in allowed_tool_profiles and value}
         config.active_special_prompt = self.special_profile.currentData() if self.special_profile.currentData() != "__global__" else ""
         config.global_prompt = self._global_prompt
         config.auto_speak = self.auto_speak.isChecked()
@@ -902,6 +988,7 @@ class Overlay(QMainWindow):
         self.events.speak.connect(self._start_speak)
         self.events.speech_finished.connect(self._speech_finished)
         self.setWindowTitle(APP_NAME)
+        self.setWindowIcon(make_app_icon())
         self.setWindowFlags(
             Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.Tool
@@ -1274,7 +1361,8 @@ class Overlay(QMainWindow):
                     api_key=self.config.ollama_api_key,
                     cancel_event=cancel_event,
                     on_text=(lambda delta: (streamed.append(delta), speech.feed(delta))) if speech else None,
-                    thinking=self.config.llm_thinking,
+                    thinking=self.config.llm_thinking_overrides.get(
+                        profile_name or "__global__", self.config.llm_thinking),
                 )
                 if speech is not None and not streamed and not cancel_event.is_set():
                     speech.feed(answer)
@@ -1530,7 +1618,8 @@ def configure_application(app: QApplication):
 
 
 def apply_app_identity(app: QApplication):
-    app.setApplicationName(APP_NAME)
+    app.setApplicationName(APP_ID)
+    app.setApplicationDisplayName(APP_NAME)
     # Unter Wayland ordnet der Desktop Fenster über diese ID dem Starter samt Icon zu.
     QGuiApplication.setDesktopFileName(APP_ID)
     app.setWindowIcon(make_app_icon())

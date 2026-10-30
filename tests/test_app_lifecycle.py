@@ -9,7 +9,8 @@ from PySide6.QtCore import QAbstractAnimation, QPoint, QPointF, QTimer, Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QFrame, QLabel, QLineEdit, QMessageBox, QPushButton, QSystemTrayIcon, QToolButton, QWidget,
+    QApplication, QDialog, QFrame, QLabel, QLineEdit, QMessageBox, QPushButton, QSystemTrayIcon,
+    QTableWidgetItem, QToolButton, QWidget,
 )
 
 from voxcomm.app import (
@@ -768,10 +769,12 @@ class ApplicationLifecycleTests(unittest.TestCase):
         titles = [label.text() for label in dialog.findChildren(QLabel, "sectionTitle")]
         self.assertEqual(
             sorted(titles),
-            sorted(["EINGABE", "SPRACHERKENNUNG", "SPRACHMODELL", "SPRACHAUSGABE", "PROMPT"]),
+            sorted(["EINGABE", "SPRACHERKENNUNG", "SPRACHMODELL", "SPRACHAUSGABE", "PROMPT", "VOXCOMM-CONTROLLER"]),
         )
         sections = dialog.findChildren(QFrame, "section")
-        self.assertEqual(len(sections), 5)
+        self.assertEqual(len(sections), 6)
+        self.assertEqual(dialog.input_action_catalog.rowCount(), 100)
+        self.assertTrue(dialog.action_catalog_section.isHidden())
         self.assertIn(system_accent().name(), dialog.styleSheet())
         self.assertEqual(dialog.findChild(QPushButton, "primary").text(), "Speichern")
         for field in (dialog.stt, dialog.tts, dialog.llm_url, dialog.key, dialog.special_prompt):
@@ -917,12 +920,16 @@ class ApplicationLifecycleTests(unittest.TestCase):
         dialog = SettingsDialog(AppConfig(special_prompts={"Star Citizen": "Ship context"}))
 
         self.assertFalse(dialog.input_control.isChecked())
+        self.assertFalse(dialog.action_catalog_section.isVisible())
         dialog.input_control.setChecked(True)
+        self.assertFalse(dialog.action_catalog_section.isHidden())
         dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Star Citizen"))
         self.assertFalse(dialog.input_control.isChecked())
+        self.assertTrue(dialog.action_catalog_section.isHidden())
         dialog.input_control.setChecked(True)
         dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("__global__"))
         self.assertTrue(dialog.input_control.isChecked())
+        self.assertFalse(dialog.action_catalog_section.isHidden())
 
         updated = dialog.apply(AppConfig(special_prompts={"Star Citizen": "Ship context"}))
 
@@ -934,15 +941,19 @@ class ApplicationLifecycleTests(unittest.TestCase):
     def test_action_catalog_is_saved_per_profile(self):
         app = QApplication.instance() or QApplication([])
         dialog = SettingsDialog(AppConfig(special_prompts={"Star Citizen": "Ship context"}))
-        dialog.input_action_catalog.setPlainText(
-            "Flight Systems On => flight ready => Button1 => Flight Systems on\n"
-            "Flight Systems Off => flight systems off => Button2 => Flight Systems off"
-        )
+        dialog.input_action_catalog.setItem(0, 1, QTableWidgetItem("Flight Systems On"))
+        dialog.input_action_catalog.setItem(0, 2, QTableWidgetItem("flight ready"))
+        dialog.input_action_catalog.setItem(0, 3, QTableWidgetItem("Flight Systems on"))
+        dialog.input_action_catalog.setItem(1, 1, QTableWidgetItem("Flight Systems Off"))
+        dialog.input_action_catalog.setItem(1, 2, QTableWidgetItem("flight systems off"))
+        dialog.input_action_catalog.setItem(1, 3, QTableWidgetItem("Flight Systems off"))
         dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Star Citizen"))
-        dialog.input_action_catalog.setPlainText(
-            "Landing Gear On => gear down => Button3 => Gear extended\n"
-            "Landing Gear Off => gear up => Button4 => Gear retracted"
-        )
+        dialog.input_action_catalog.setItem(2, 1, QTableWidgetItem("Landing Gear On"))
+        dialog.input_action_catalog.setItem(2, 2, QTableWidgetItem("gear down"))
+        dialog.input_action_catalog.setItem(2, 3, QTableWidgetItem("Gear extended"))
+        dialog.input_action_catalog.setItem(3, 1, QTableWidgetItem("Landing Gear Off"))
+        dialog.input_action_catalog.setItem(3, 2, QTableWidgetItem("gear up"))
+        dialog.input_action_catalog.setItem(3, 3, QTableWidgetItem("Gear retracted"))
 
         updated = dialog.apply(AppConfig(special_prompts={"Star Citizen": "Ship context"}))
 
@@ -956,6 +967,23 @@ class ApplicationLifecycleTests(unittest.TestCase):
                 "Landing Gear Off => gear up => Button4 => Gear retracted"
             ),
         })
+
+    def test_thinking_override_is_saved_per_prompt_profile(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig(
+            special_prompts={"Star Citizen": "Ship context"},
+            llm_thinking="medium",
+        ))
+        dialog._apply_thinking_options(dialog._thinking_token, ["low", "medium", "high"])
+        dialog.profile_thinking.setCurrentIndex(dialog.profile_thinking.findData("low"))
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Star Citizen"))
+        dialog.profile_thinking.setCurrentIndex(dialog.profile_thinking.findData("high"))
+
+        updated = dialog.apply(AppConfig(special_prompts={"Star Citizen": "Ship context"}, llm_thinking="medium"))
+
+        self.assertEqual(updated.llm_thinking_overrides, {"__global__": "low", "Star Citizen": "high"})
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("__global__"))
+        self.assertEqual(dialog.profile_thinking.currentData(), "low")
 
 
 class ProviderSelectionTests(unittest.TestCase):
