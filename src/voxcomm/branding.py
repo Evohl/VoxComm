@@ -25,15 +25,15 @@ ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" widt
       <stop offset="1" stop-color="#171b1f"/>
     </linearGradient>
   </defs>
-  <rect x="6" y="6" width="116" height="116" rx="30" fill="url(#panel)"/>
-  <rect x="6.75" y="6.75" width="114.5" height="114.5" rx="29.25" fill="none" stroke="url(#accent)" stroke-opacity="0.55" stroke-width="1.5"/>
-  <circle cx="64" cy="64" r="38" fill="none" stroke="url(#accent)" stroke-opacity="0.35" stroke-width="5"/>
-  <g stroke="url(#accent)" stroke-width="8" stroke-linecap="round">
-    <line x1="36" y1="56" x2="36" y2="72"/>
-    <line x1="50" y1="46" x2="50" y2="82"/>
-    <line x1="64" y1="34" x2="64" y2="94"/>
-    <line x1="78" y1="46" x2="78" y2="82"/>
-    <line x1="92" y1="56" x2="92" y2="72"/>
+  <rect x="1" y="1" width="126" height="126" rx="32" fill="url(#panel)"/>
+  <rect x="1.75" y="1.75" width="124.5" height="124.5" rx="31.25" fill="none" stroke="url(#accent)" stroke-opacity="0.55" stroke-width="2"/>
+  <circle cx="64" cy="64" r="47" fill="none" stroke="url(#accent)" stroke-opacity="0.35" stroke-width="6"/>
+  <g stroke="url(#accent)" stroke-width="10" stroke-linecap="round">
+    <line x1="28" y1="54" x2="28" y2="74"/>
+    <line x1="46" y1="41" x2="46" y2="87"/>
+    <line x1="64" y1="26" x2="64" y2="102"/>
+    <line x1="82" y1="41" x2="82" y2="87"/>
+    <line x1="100" y1="54" x2="100" y2="74"/>
   </g>
 </svg>
 """
@@ -82,7 +82,7 @@ def install_launcher(data_home: Path | None = None, command: str | None = None) 
         f"Name={APP_NAME}\n"
         f"Comment={APP_COMMENT}\n"
         f"Exec={_desktop_exec(command or _launcher_command())}\n"
-        f"Icon={APP_ID}\n"
+        f"Icon={icon_path}\n"
         "Terminal=false\n"
         "Categories=AudioVideo;Audio;\n"
         f"StartupWMClass={APP_ID}\n",

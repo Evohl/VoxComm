@@ -38,7 +38,7 @@ class BrandingTests(unittest.TestCase):
             self.assertEqual(icon_path.read_text(encoding="utf-8"), ICON_SVG)
             entry = desktop_path.read_text(encoding="utf-8")
             self.assertIn(f"Name={APP_NAME}\n", entry)
-            self.assertIn(f"Icon={APP_ID}\n", entry)
+            self.assertIn(f"Icon={icon_path}\n", entry)
             self.assertIn(f"StartupWMClass={APP_ID}\n", entry)
             self.assertIn("Categories=AudioVideo;Audio;\n", entry)
             self.assertIn('Exec="/opt/my apps/.venv/bin/voxcomm"\n', entry)
