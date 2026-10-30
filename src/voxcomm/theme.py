@@ -110,9 +110,9 @@ def dialog_stylesheet(accent: QColor, surface: QColor, text: QColor) -> str:
             background-color: {surface.name()}; color: {text.name()}; border: 1px solid {rgba(accent, 120)};
             selection-background-color: {rgba(accent, 110)}; selection-color: {text.name()}; outline: none; padding: 4px;
         }}
-        QSpinBox {{ padding-right: 28px; }}
-        QSpinBox::up-button {{ subcontrol-origin: border; subcontrol-position: top right; width: 24px; border: none; }}
-        QSpinBox::down-button {{ subcontrol-origin: border; subcontrol-position: bottom right; width: 24px; border: none; }}
+        QSpinBox {{ padding: 2px 24px 2px 8px; }}
+        QSpinBox::up-button {{ subcontrol-origin: border; subcontrol-position: top right; width: 20px; height: 12px; border: none; }}
+        QSpinBox::down-button {{ subcontrol-origin: border; subcontrol-position: bottom right; width: 20px; height: 12px; border: none; }}
         QSpinBox::up-arrow {{ image: url("{glyph_path('up', accent)}"); width: 10px; height: 10px; }}
         QSpinBox::down-arrow {{ image: url("{glyph_path('down', accent)}"); width: 10px; height: 10px; }}
         QCheckBox {{ color: {text.name()}; spacing: 8px; }}

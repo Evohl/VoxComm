@@ -44,12 +44,12 @@ class MangoHudStatusTests(unittest.TestCase):
                         path.write_text(value, encoding="utf-8")
                         self.assertEqual(current_status(), "")
 
-    def test_status_is_transliterated_for_mangohud_fonts(self):
+    def test_status_preserves_unicode_for_mangohud(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch("voxcomm.mangohud.status_path", return_value=Path(directory) / "status.json"):
-                publish_status("Flugbereitschaft bestätigt · Systeme online")
+                publish_status("Flugbereitschaft bestätigt · Systeme online · 안녕하세요")
 
-                self.assertEqual(current_status(), "Flugbereitschaft bestaetigt | Systeme online")
+                self.assertEqual(current_status(), "Flugbereitschaft bestaetigt | Systeme online | 안녕하세요")
 
 
 if __name__ == "__main__":

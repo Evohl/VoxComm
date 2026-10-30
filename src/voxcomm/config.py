@@ -36,6 +36,7 @@ class AppConfig:
     ptt_key: str = "F9"
     sample_rate: int = 16000
     tray_mode: bool = False
+    overlay_hide_seconds: int = 10
     overlay_x: int | None = None
     overlay_y: int | None = None
 

@@ -33,7 +33,6 @@ TYPE_INTERVAL_MS = 24
 MIN_PTT_DURATION_MS = 200
 TRANSCRIPT_WIDTH = 480
 TRANSCRIPT_MAX_HEIGHT = 200
-HIDE_DELAY_MS = 3000
 THINKING_STATUS = "Denke nach …"
 SPEAKING_STATUS = "Spricht …"
 WHISPER_CPP_DEFAULT_URL = "http://127.0.0.1:8081"
@@ -340,6 +339,12 @@ class SettingsDialog(QDialog):
         self.sample_rate.setRange(8000, 48000)
         self.sample_rate.setSingleStep(8000)
         self.sample_rate.setValue(config.sample_rate)
+        self.sample_rate.setFixedHeight(30)
+        self.overlay_hide_seconds = QSpinBox()
+        self.overlay_hide_seconds.setRange(1, 120)
+        self.overlay_hide_seconds.setSuffix(" s")
+        self.overlay_hide_seconds.setValue(config.overlay_hide_seconds)
+        self.overlay_hide_seconds.setFixedHeight(30)
         self.auto_speak = QCheckBox("Antworten nach der Generierung automatisch vorlesen")
         self.auto_speak.setChecked(config.auto_speak)
         self.tray_mode = QCheckBox("Tray-Modus: Klick startet/stoppt die Aufnahme; Overlay-Buttons ausblenden")
@@ -352,18 +357,25 @@ class SettingsDialog(QDialog):
         self.voice_refresh = self._refresh_button("Stimmen vom Dienst laden")
         self.voice_refresh.clicked.connect(lambda: self._discover("voices"))
         voice_row = QHBoxLayout()
+        voice_row.setContentsMargins(0, 0, 0, 0)
+        voice_row.setSpacing(10)
         voice_row.addWidget(self.voice, 1)
         voice_row.addWidget(self.voice_refresh)
+        self._voice_row = voice_row
         self.model_refresh = self._refresh_button("Modelle vom Dienst laden")
         self.model_refresh.clicked.connect(lambda: self._discover("models"))
         model_row = QHBoxLayout()
+        model_row.setContentsMargins(0, 0, 0, 0)
+        model_row.setSpacing(10)
         model_row.addWidget(self.model, 1)
         model_row.addWidget(self.model_refresh)
+        self._model_row = model_row
         self.response_language.setObjectName("hint")
         left = QVBoxLayout()
         left.setSpacing(14)
         left.addWidget(self._section("Eingabe", [
             ("PTT-Taste / Button", self.key), ("Mikrofon-Samplerate", self.sample_rate),
+            ("Overlay-Anzeigedauer", self.overlay_hide_seconds),
             (None, self.tray_mode), (None, self.reset_position),
         ]))
         self.stt_section = self._section("Spracherkennung", [
@@ -821,6 +833,7 @@ class SettingsDialog(QDialog):
         config.llm_thinking = self._thinking_setting
         config.ollama_api_key = self.api_key.text().strip()
         config.ptt_key, config.sample_rate = self.key.value(), self.sample_rate.value()
+        config.overlay_hide_seconds = self.overlay_hide_seconds.value()
         return config
 
     @property
@@ -906,7 +919,12 @@ class Overlay(QMainWindow):
         self.transcript.setReadOnly(True)
         self.transcript.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.transcript.document().setDocumentMargin(0)
-        self.transcript.setFont(QFont("AtkynsonMono Nerd Font", 11))
+        transcript_font = QFont()
+        transcript_font.setFamilies([
+            "AtkynsonMono Nerd Font", "Noto Sans CJK KR", "Noto Sans CJK JP", "Noto Sans CJK SC",
+        ])
+        transcript_font.setPointSize(11)
+        self.transcript.setFont(transcript_font)
         self.transcript.setFixedSize(TRANSCRIPT_WIDTH, 0)
         self.transcript.viewport().setCursor(Qt.CursorShape.SizeAllCursor)
         text_column = QVBoxLayout()
@@ -956,7 +974,7 @@ class Overlay(QMainWindow):
         self._fade_animation.finished.connect(self._clear_faded_text)
         self._hide_timer = QTimer(self)
         self._hide_timer.setSingleShot(True)
-        self._hide_timer.setInterval(HIDE_DELAY_MS)
+        self._hide_timer.setInterval(max(1, self.config.overlay_hide_seconds) * 1000)
         self._hide_timer.timeout.connect(self._fade_out)
         self._type_timer = QTimer(self)
         self._type_timer.setInterval(TYPE_INTERVAL_MS)
@@ -1462,6 +1480,7 @@ class Overlay(QMainWindow):
         if dialog.exec():
             self.listener.stop()
             self.config = dialog.apply(self.config)
+            self._hide_timer.setInterval(self.config.overlay_hide_seconds * 1000)
             if self.config.tray_mode and not QSystemTrayIcon.isSystemTrayAvailable():
                 QMessageBox.warning(dialog, "Tray nicht verfügbar", "In dieser Sitzung ist kein System-Tray verfügbar. Der Overlay-Modus bleibt aktiv.")
                 self.config.tray_mode = False

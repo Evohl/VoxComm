@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from voxcomm.app import (
-    COMPACT_WIDTH, FULL_WIDTH, HIDE_DELAY_MS,
+    COMPACT_WIDTH, FULL_WIDTH,
     SPEAKING_STATUS, TRANSCRIPT_MAX_HEIGHT, TYPE_INTERVAL_MS,
     HotkeyField, Overlay,
     SettingsDialog,
@@ -30,6 +30,16 @@ class ApplicationLifecycleTests(unittest.TestCase):
 
     def tearDown(self):
         self._config_patch.stop()
+
+    def test_settings_refresh_rows_have_spacing_and_numeric_controls_are_compact(self):
+        dialog = SettingsDialog(AppConfig())
+
+        self.assertEqual(dialog._voice_row.spacing(), 10)
+        self.assertEqual(dialog._model_row.spacing(), 10)
+        self.assertEqual(dialog.sample_rate.height(), 30)
+        self.assertEqual(dialog.overlay_hide_seconds.height(), 30)
+
+        dialog.deleteLater()
 
     def test_accepting_dialog_does_not_quit_tool_window_app(self):
         app = QApplication.instance() or QApplication([])
@@ -408,7 +418,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
             overlay = Overlay()
             self.assertTrue(overlay.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground))
             self.assertTrue(overlay.windowFlags() & Qt.WindowType.FramelessWindowHint)
-            self.assertEqual(overlay._hide_timer.interval(), 3000)
+            self.assertEqual(overlay._hide_timer.interval(), 10_000)
             panel = overlay.centralWidget()
             self.assertTrue(panel.testAttribute(Qt.WidgetAttribute.WA_StyledBackground))
             self.assertIn(rgba(system_surface(), 170), panel.styleSheet())
@@ -665,7 +675,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
             overlay.events.speech_finished.emit()
 
             self.assertTrue(overlay._hide_timer.isActive())
-            self.assertEqual(overlay._hide_timer.interval(), HIDE_DELAY_MS)
+            self.assertEqual(overlay._hide_timer.interval(), 10_000)
             overlay.listener.stop()
             overlay.deleteLater()
 

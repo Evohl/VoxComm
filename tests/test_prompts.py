@@ -29,6 +29,14 @@ class PromptTests(unittest.TestCase):
         self.assertLess(prompt.index("Sprachausgabe (TTS)"), prompt.index("Spezialprofil: Star Citizen"))
         self.assertIn("Sprachausgabe (TTS)", build_system_prompt(global_prompt=""))
 
+    def test_tts_rules_preserve_native_non_latin_scripts(self):
+        prompt = build_system_prompt(piper_voice="ja_JP-voice")
+
+        self.assertIn("Chinesisch, Japanisch und Koreanisch", prompt)
+        self.assertIn("üblichen Originalschrift", prompt)
+        self.assertIn("Transliteration in lateinische Buchstaben ist nicht erwünscht", prompt)
+        self.assertIn("Antworte immer in der Sprache Japanese", prompt)
+
     def test_special_profile_is_separate_and_optional(self):
         base = build_system_prompt(piper_voice="en_US-amy-medium")
         extended = build_system_prompt(

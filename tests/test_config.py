@@ -53,6 +53,15 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             self.assertEqual(load_config(Path(directory) / "missing.toml"), AppConfig())
 
+    def test_overlay_hide_seconds_round_trip_and_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            self.assertEqual(AppConfig().overlay_hide_seconds, 10)
+
+            save_config(AppConfig(overlay_hide_seconds=25), path)
+
+            self.assertEqual(load_config(path).overlay_hide_seconds, 25)
+
     def test_legacy_additional_prompt_migrates_to_selected_profile(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"

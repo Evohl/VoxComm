@@ -5,7 +5,6 @@ import math
 import os
 import sys
 import time
-import unicodedata
 from pathlib import Path
 
 
@@ -50,7 +49,6 @@ def current_status() -> str:
             "Ä": "Ae", "Ö": "Oe", "Ü": "Ue",
             "ß": "ss", "ẞ": "SS", "·": "|", "…": "...",
         }))
-        text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
         return "\n".join(" ".join(line.split()) for line in text.splitlines())[:MAX_STATUS_LENGTH]
     except (OSError, ValueError, TypeError, OverflowError):
         return ""
