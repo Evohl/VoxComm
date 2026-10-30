@@ -228,7 +228,7 @@ class ThinkingTests(unittest.TestCase):
 
 
 class ModelDiscoveryTests(unittest.TestCase):
-    @patch("voxcomm.providers.llm._request")
+    @patch("voxcomm.providers.llm._request_stream")
     @patch("voxcomm.providers.llm.search_web")
     def test_cancelled_model_request_does_not_run_tools_after_return(self, search, request):
         cancel_event = threading.Event()
@@ -247,6 +247,21 @@ class ModelDiscoveryTests(unittest.TestCase):
         self.assertEqual(answer, "")
         request.assert_called_once()
         search.assert_not_called()
+
+    @patch("voxcomm.providers.llm.httpx.post")
+    @patch("voxcomm.providers.llm.httpx.stream")
+    def test_web_search_profile_uses_cancellable_stream_without_live_text(self, stream, post):
+        stream.return_value = FakeStreamResponse(_ndjson({"content": "Antwort"}))
+        deltas = []
+
+        answer = chat(
+            "ollama", "http://h:11434", "m", "Hi", enabled_tools=["web_search"],
+            on_text=deltas.append, cancel_event=threading.Event(),
+        )
+
+        self.assertEqual(answer, "Antwort")
+        self.assertEqual(deltas, [])
+        post.assert_not_called()
 
     @patch("voxcomm.providers.llm.httpx.post")
     def test_chat_sends_system_prompt_before_user_message(self, post):

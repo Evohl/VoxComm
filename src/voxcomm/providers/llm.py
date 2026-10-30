@@ -462,9 +462,11 @@ def chat(
         try:
             offered_tools = available_tools if executed < MAX_TOOL_CALLS and available_tools else None
             # Mit Websuche kann die Antwort nachträglich ersetzt werden, daher dann kein Live-Text.
-            if on_text is not None and not web_search_enabled:
+            live_text = on_text if not web_search_enabled else None
+            # Nur der Stream-Pfad kann die Verbindung beim Abbruch trennen und so die Generierung beenden.
+            if live_text is not None or cancel_event is not None:
                 message = _request_stream(provider, base_url, model, messages, offered_tools,
-                                          api_key=api_key, on_text=on_text, cancel_event=cancel_event, think=think)
+                                          api_key=api_key, on_text=live_text, cancel_event=cancel_event, think=think)
             else:
                 message = _request(provider, base_url, model, messages, offered_tools, api_key=api_key, think=think)
         except CloudAuthError as error:
