@@ -468,7 +468,7 @@ def chat(
     while True:
         if cancelled():
             return ""
-        report_status(tr("Sending prompt to model …") if not request_started
+        report_status(tr("Waiting for model response …") if not request_started
                   else tr("Model is processing results …"))
         request_started = True
         available_tools = [tool for tool in tool_definitions

@@ -126,7 +126,7 @@ class StreamingTests(unittest.TestCase):
              enabled_tools=["web_search"], on_status=statuses.append)
 
         self.assertTrue(statuses[0].startswith("Web search: Wie ist das Wetter "))
-        self.assertEqual(statuses[1], "Sending prompt to model …")
+        self.assertEqual(statuses[1], "Waiting for model response …")
         search.assert_called_once()
 
     @patch("voxcomm.providers.llm.press_gamepad_button", return_value="Button3")
@@ -150,7 +150,7 @@ class StreamingTests(unittest.TestCase):
 
         self.assertEqual(answer, "Fahrwerk ausgefahren.")
         self.assertEqual(deltas, ["Fahrwerk ausgefahren."])
-        self.assertEqual(statuses, ["Sending prompt to model …", "Controller action: Gear On …", "Model is processing results …"])
+        self.assertEqual(statuses, ["Waiting for model response …", "Controller action: Gear On …", "Model is processing results …"])
         press.assert_called_once_with("Button3")
 
 

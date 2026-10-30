@@ -127,7 +127,7 @@
 	"Input was not sent: {error}": "Eingabe nicht gesendet: {error}",
 	"No language model configured. Set a model in Settings.": "Kein Sprachmodell konfiguriert. In den Einstellungen ein Modell auswählen.",
 	"Web search: {query}{ellipsis}": "Websuche: {query}{ellipsis}",
-	"Sending prompt to model …": "Sende Prompt ans Modell …",
+	"Waiting for model response …": "Warte auf Antwort des Modells …",
 	"Model is processing results …": "Modell verarbeitet Ergebnisse …",
 	"Web search in progress …": "Websuche läuft …",
 	"No readable input devices found (access to /dev/input required)": "Keine lesbaren Eingabegeräte gefunden (Zugriff auf /dev/input erforderlich)",
