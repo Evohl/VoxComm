@@ -1307,9 +1307,7 @@ class Overlay(QMainWindow):
             self._hide_after_typing = True
             self._schedule_hide()
         elif kind == "pressed":
-            profile = text if text in self.config.special_prompts else self.config.active_special_prompt
-            if profile not in self.config.special_prompts:
-                profile = ""
+            profile = text if text in self.config.special_prompts else ""
             self._stop_speaking()
             with self._request_cancellations_lock:
                 for cancel_event in self._request_cancellations:

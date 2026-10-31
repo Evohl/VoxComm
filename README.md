@@ -167,15 +167,22 @@ The **Web search** permission is off by default and is configured independently 
 The **VoxComm controller actions** permission is off by default and is configured independently for Global and every specialty profile. When enabled, the model can select only a named action from that profile's catalog; it cannot send keyboard input or invent button numbers. Each action sends one tap to the virtual VoxComm controller. Catalog lines use `Action Name => keyword|alias => ButtonN => short reply`. Use separate On and Off lines for explicit state-setting controls; single lines are valid for toggles and one-shot actions:
 
 ```text
-Flight Systems On => flight ready|systeme ein => Button1 => Flight Systems eingeschaltet
-Flight Systems Off => flight systems off|systeme aus => Button2 => Flight Systems ausgeschaltet
+Hail Target => hail target|hail selected target|ziel anfunken => Button40 => Ziel anfunken.
+Headlights On => headlights on|turn headlights on|scheinwerfer an => Button64 => Scheinwerfer an.
+Headlights Off => headlights off|turn headlights off|scheinwerfer aus => Button65 => Scheinwerfer aus.
 ```
 
 Existing keyboard-style catalog entries must be replaced with this controller format. VoxComm sends a short tap, not a held button; Star Citizen bindings that explicitly require a long press may therefore not work as expected. The feature requires the optional `evdev` input dependency, a running virtual controller, and write access to `/dev/uinput`.
 
 ### Virtual button controller
 
-On Linux, install the optional input dependency with `pip install -e '.[input]'`, then start VoxComm's virtual controller with `voxcomm-gamepad start`. It appears as **VoxComm** and exposes `Button1` through `Button100` as button-only events, with no sticks or axes. Use `voxcomm-gamepad press Button37` to test a button, or `voxcomm-gamepad press Button37 --delay 2` to wait two seconds before pressing. `voxcomm-gamepad status` checks the device and `voxcomm-gamepad stop` removes it. The controller runs only while started and requires write permission for `/dev/uinput`. If needed, an administrator can grant access to the `input` group with a udev rule such as `KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"` in `/etc/udev/rules.d/99-uinput.rules`, then reload udev and reconnect the user session. Bind each On and Off command to its own numbered button in the game's controller settings, then add those button assignments to the active profile's action catalog.
+On Linux, install the optional input dependency with `pip install -e '.[input]'`. When VoxComm starts, it automatically starts the virtual controller if it is not already running. It appears as **VoxComm** (a joystick/game controller) and exposes `Button1` through `Button100` as button-only events, with no sticks or axes. If VoxComm started the controller, it stops it when the application exits; a controller that was already running is left alone. `voxcomm-gamepad status` checks it. You only need `voxcomm-gamepad start` when you want to run the controller without launching VoxComm.
+
+To bind a virtual button in Star Citizen, open the game's controller binding and select **Bind Key** for the action. In a terminal, enter a delayed tap command such as `voxcomm-gamepad press Button1 --delay 5` and press Enter; within five seconds, return to the game while it is listening for the binding. Star Citizen should detect the **VoxComm** controller button. Repeat with the button number used by each action in the VoxComm profile catalog. For a quick check, `voxcomm-gamepad press Button1` taps immediately; `--delay 2` waits two seconds. Each press is a short 50 ms tap.
+
+`voxcomm-gamepad stop` removes a manually started controller. The controller requires write permission for `/dev/uinput`. If needed, an administrator can grant access to the `input` group with a udev rule such as `KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"` in `/etc/udev/rules.d/99-uinput.rules`, then reload udev and reconnect the user session.
+
+For reasoning-capable models, set **Profile reasoning** to **Off** in the active profile when low response latency matters. This disables the model's extra reasoning step and can substantially reduce the delay before the first response; the option is available only when the selected model reports support for it.
 
 ### In-game status with MangoHud
 

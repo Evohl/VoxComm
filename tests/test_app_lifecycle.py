@@ -386,7 +386,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
             overlay.tray_icon.hide()
             overlay.deleteLater()
 
-    def test_general_ptt_uses_active_prompt_profile(self):
+    def test_general_ptt_ignores_active_prompt_profile(self):
         app = QApplication.instance() or QApplication([])
         config = AppConfig(
             special_prompts={"Star Citizen": "Ship context"},
@@ -398,7 +398,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
 
                 overlay._ptt_event("pressed", "")
 
-                self.assertEqual(thread_class.call_args.kwargs["args"][1], "Star Citizen")
+                self.assertEqual(thread_class.call_args.kwargs["args"][1], "")
                 overlay.listener.stop()
                 overlay.tray_icon.hide()
                 overlay.deleteLater()
