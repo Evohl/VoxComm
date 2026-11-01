@@ -448,17 +448,17 @@ class ApplicationLifecycleTests(unittest.TestCase):
         app = QApplication.instance() or QApplication([])
         config = AppConfig(overlay_x=140, overlay_y=160)
         with patch("voxcomm.app.load_config", return_value=config):
-            with patch("voxcomm.app.PttListener"), patch("voxcomm.app.save_config") as save_config:
+            with patch("voxcomm.app.PttListener"), patch("voxcomm.app.save_overlay_position") as save_position:
                 overlay = Overlay()
                 self.assertEqual(overlay.pos(), QPoint(140, 160))
                 self.assertTrue(overlay.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
-                self.assertFalse(save_config.called)
+                self.assertFalse(save_position.called)
                 overlay.move(180, 200)
                 self.assertTrue(overlay._position_save_timer.isActive())
                 overlay._position_save_timer.stop()
                 overlay._save_overlay_position()
                 self.assertEqual((config.overlay_x, config.overlay_y), (180, 200))
-                self.assertTrue(save_config.called)
+                save_position.assert_called_once_with(180, 200)
                 overlay.listener.stop()
                 overlay.deleteLater()
 
@@ -466,7 +466,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
         app = QApplication.instance() or QApplication([])
         config = AppConfig(overlay_x=50000, overlay_y=50000)
         with patch("voxcomm.app.load_config", return_value=config):
-            with patch("voxcomm.app.PttListener"), patch("voxcomm.app.save_config") as save_config:
+            with patch("voxcomm.app.PttListener"), patch("voxcomm.app.save_overlay_position") as save_position:
                 overlay = Overlay()
                 area = QGuiApplication.primaryScreen().availableGeometry()
                 expected = QPoint(area.left() + (area.width() - overlay.width()) // 2, area.top() + 12)
@@ -475,7 +475,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
                 self.assertTrue(dialog.reset_position.isEnabled())
                 dialog.reset_position.click()
                 self.assertEqual((config.overlay_x, config.overlay_y), (expected.x(), expected.y()))
-                self.assertTrue(save_config.called)
+                save_position.assert_called_with(expected.x(), expected.y())
                 overlay.listener.stop()
                 overlay.tray_icon.hide()
                 overlay.deleteLater()

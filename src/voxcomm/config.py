@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import shutil
 import tomllib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -99,8 +100,19 @@ def save_config(config: AppConfig, path: Path | None = None) -> None:
             rows.extend(["", f"[{table}]"])
             rows.extend(f"{json.dumps(name, ensure_ascii=True)} = {json.dumps(value, ensure_ascii=True)}"
                         for name, value in entries.items())
+    if target.exists():
+        backup = target.with_name(target.name + ".bak")
+        shutil.copyfile(target, backup)
+        os.chmod(backup, 0o600)
     temporary = target.with_suffix(".tmp")
     temporary.write_text("\n".join(rows) + "\n", encoding="utf-8")
     os.chmod(temporary, 0o600)
     temporary.replace(target)
     os.chmod(target, 0o600)
+
+
+def save_overlay_position(x: int, y: int, path: Path | None = None) -> None:
+    stored = load_config(path)
+    stored.overlay_x = x
+    stored.overlay_y = y
+    save_config(stored, path)

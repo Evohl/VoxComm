@@ -4,7 +4,7 @@ from unittest.mock import patch
 from evdev import ecodes
 
 from voxcomm.gamepad import (
-    BUTTON_CODES, BUTTON_COUNT, DEVICE_NAME, VirtualGamepad, normalize_button, press_gamepad_button,
+    BUTTON_CODES, BUTTON_COUNT, DEVICE_NAME, HOLD_SECONDS, VirtualGamepad, normalize_button, press_gamepad_button,
 )
 
 
@@ -58,7 +58,28 @@ class GamepadTests(unittest.TestCase):
         self.assertEqual(press_gamepad_button("Button37", delay=2.5), "Button37")
 
         sleep.assert_called_once_with(2.5)
-        send_command.assert_called_once_with({"command": "press", "button": "Button37"})
+        send_command.assert_called_once_with({"command": "press", "button": "Button37", "hold": False})
+
+    @patch("voxcomm.gamepad._send_command", return_value={"button": "Button37"})
+    def test_hold_press_sends_hold_flag(self, send_command):
+        press_gamepad_button("Button37", hold=True)
+
+        send_command.assert_called_once_with({"command": "press", "button": "Button37", "hold": True})
+
+    def test_press_rejects_non_boolean_hold(self):
+        with self.assertRaises(ValueError):
+            press_gamepad_button("Button1", hold="yes")
+
+    @patch("voxcomm.gamepad.time.sleep")
+    @patch("evdev.UInput")
+    def test_hold_duration_is_about_one_second(self, uinput, sleep):
+        gamepad = VirtualGamepad()
+
+        gamepad.tap("Button2", duration=HOLD_SECONDS)
+
+        sleep.assert_called_once_with(HOLD_SECONDS)
+        self.assertEqual(HOLD_SECONDS, 1.0)
+        gamepad.close()
 
     def test_press_rejects_invalid_delays(self):
         for delay in (-1, 3601, float("nan"), float("inf"), True, "2"):

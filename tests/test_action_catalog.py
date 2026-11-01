@@ -1,76 +1,156 @@
 import unittest
-from unittest.mock import patch
 
-from voxcomm.action_catalog import match_action, parse_action_catalog
+from voxcomm.action_catalog import (
+    action_reply,
+    parse_action_catalog,
+    reply_language_tag,
+    resolve_utterance,
+)
+
+SAMPLE = (
+    "{call}: call, hail, rufen, kontaktieren\n"
+    "{deploy}: deploy, ausfahren, ausklappen\n"
+    "{retract}: retract, einfahren, einklappen\n"
+    "Landing Gear Deploy => landing gear|fahrwerk + {deploy}, down => Button26 => {DE} Fahrwerk ausgefahren. | {EN} Landing gear deployed\n"
+    "Landing Gear Retract => landing gear|fahrwerk + {retract}, up => Button27 => {DE} Fahrwerk eingefahren. | {EN} Landing gear retracted\n"
+    "Hangar Call => hangar + {call} => Button31 => {DE} Verbindung zum Hangar hergestellt. | {EN} Hangar contacted\n"
+    "Cargo Call => cargo + {call} => Button32 => {DE} Frachtabfertigung kontaktiert. | {EN} Cargo loading contacted\n"
+)
 
 
-class ActionCatalogTests(unittest.TestCase):
-    def test_matches_exact_keyword_and_returns_configured_chord(self):
-        catalog = (
-            "Flight Systems On => flight ready|systeme ein => Button1 => Flight Systems eingeschaltet\n"
-            "Flight Systems Off => flight systems off|systeme aus => Button2 => Flight Systems ausgeschaltet"
-        )
+class ActionCatalogParseTests(unittest.TestCase):
+    def test_sets_expand_into_keyword_groups_and_configured_button(self):
+        actions = parse_action_catalog(SAMPLE)
 
-        action = match_action(catalog, "Du: Flight ready bitte!")
+        hangar = actions[2]
+        self.assertEqual(hangar["name"], "Hangar Call")
+        self.assertEqual(hangar["button"], "Button31")
+        self.assertFalse(hangar["hold"])
+        self.assertEqual(hangar["keywords"], (("hangar",), ("call", "hail", "rufen", "kontaktieren")))
+        self.assertEqual(hangar["replies"], {"DE": "Verbindung zum Hangar hergestellt.", "EN": "Hangar contacted"})
 
-        self.assertEqual(action["name"], "Flight Systems On")
-        self.assertEqual(action["button"], "Button1")
-        self.assertEqual(action["reply"], "Flight Systems eingeschaltet")
+    def test_hold_suffix_marks_action_as_held(self):
+        actions = parse_action_catalog("Fire => fire => Button3 hold => {EN} Fire")
 
-    def test_matches_configured_button_and_does_not_match_questions(self):
-        catalog = (
-            "Landing Gear On => gear down|fahrwerk runter => Button3 => Fahrwerk ausgefahren\n"
-            "Landing Gear Off => gear up => Button4 => Fahrwerk eingefahren"
-        )
+        self.assertEqual(actions[0]["button"], "Button3")
+        self.assertTrue(actions[0]["hold"])
 
-        action = match_action(catalog, "Fahrwerk runter bitte")
+    def test_rejects_unknown_button_suffixes(self):
+        for field in ("Button3 tap", "Button3 hold now", "Button3 Button4"):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                parse_action_catalog(f"Gear => gear => {field} => {{EN}} Gear.")
 
-        self.assertEqual(action["button"], "Button3")
-        self.assertIsNone(match_action(catalog, "Wie schalte ich das Fahrwerk runter?"))
-        self.assertIsNone(match_action(catalog, "Kannst du das Fahrwerk runter schalten?"))
+    def test_rejects_malformed_or_empty_keyword_entries(self):
+        for line in (
+            "Flight Systems On => flight ready => Button1",
+            "Flight Systems On => flight ready + => Button1 => {EN} ready",
+            "Flight Systems On => |ready => Button1 => {EN} ready",
+        ):
+            with self.subTest(line=line), self.assertRaises(ValueError):
+                parse_action_catalog(line)
 
-    def test_rejects_malformed_or_unsafe_catalog_entries(self):
-        with self.assertRaises(ValueError):
-            parse_action_catalog("Flight Systems On => flight ready => Button1")
+    def test_replies_require_distinct_language_tags(self):
+        with self.assertRaisesRegex(ValueError, "reply must be"):
+            parse_action_catalog("Gear On => gear => Button3 => Gear extended")
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            parse_action_catalog("Gear On => gear => Button3 => {DE} a | {DE} b")
+
+    def test_unknown_set_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "unknown set"):
+            parse_action_catalog("Gear On => {nope} => Button3 => {EN} Gear extended")
 
     def test_actions_must_use_distinct_buttons(self):
         catalog = (
-            "Flight Systems On => flight ready => Button1 => enabled\n"
-            "Flight Systems Off => flight systems off => Button1 => disabled"
+            "Flight Systems On => flight ready => Button1 => {EN} enabled\n"
+            "Flight Systems Off => flight systems off => Button1 hold => {EN} disabled"
         )
 
         with self.assertRaisesRegex(ValueError, "own button"):
             parse_action_catalog(catalog)
-        with self.assertRaises(ValueError):
-            parse_action_catalog("Flight Systems On => |ready => Button1 => ready")
+
+    def test_action_names_must_be_unique(self):
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            parse_action_catalog("Power On => power on => Button5 => {EN} on\nPower on => power up => Button6 => {EN} up")
 
     def test_single_actions_without_on_off_pairs_are_valid(self):
-        catalog = (
-            "Self Destruct => self destruct|destroy ship => Button11 => Self destruct.\n"
-            "Set Mining Operator Mode => mining mode|switch to mining => Button1 => Mining mode."
+        actions = parse_action_catalog(
+            "Self Destruct => self destruct|destroy ship => Button11 => {EN} Self destruct.\n"
+            "Set Mining Operator Mode => mining mode|switch to mining => Button1 => {EN} Mining mode."
         )
 
-        actions = parse_action_catalog(catalog)
-        self.assertEqual(len(actions), 2)
-        self.assertEqual(match_action(catalog, "switch to mining")['button'], "Button1")
-
-    def test_conflicting_equal_length_keywords_are_ambiguous(self):
-        catalog = (
-            "Power On => power on => Button5 => enable\n"
-            "Power Off => power off => Button6 => disable\n"
-            "Thrusters On => power on => Button7 => enable thrusters\n"
-            "Thrusters Off => thrusters off => Button8 => disable thrusters"
-        )
-
-        with self.assertRaises(ValueError):
-            match_action(catalog, "power on")
+        self.assertEqual([action["button"] for action in actions], ["Button11", "Button1"])
 
     def test_comments_and_empty_lines_are_ignored(self):
         actions = parse_action_catalog(
-            "# note\n\nPower On => power on => Button9 => enabled\nPower Off => power off => Button10 => disabled"
+            "# note\n\nPower On => power on => Button9 => {EN} enabled\nPower Off => power off => Button10 => {EN} disabled"
         )
 
         self.assertEqual(len(actions), 2)
+
+
+class ActionCatalogResolveTests(unittest.TestCase):
+    def setUp(self):
+        self.actions = parse_action_catalog(SAMPLE)
+
+    def test_exact_group_match_selects_single_action(self):
+        resolution = resolve_utterance(self.actions, "Fahrwerk ausfahren")
+
+        self.assertEqual(resolution.status, "match")
+        self.assertEqual([action["name"] for action in resolution.actions], ["Landing Gear Deploy"])
+
+    def test_english_phrase_matches_through_set_alternatives(self):
+        resolution = resolve_utterance(self.actions, "Landing gear down")
+
+        self.assertEqual(resolution.status, "match")
+        self.assertEqual(resolution.actions[0]["button"], "Button26")
+
+    def test_several_clauses_resolve_to_several_actions(self):
+        resolution = resolve_utterance(self.actions, "Fahrwerk ausfahren und Hangar kontaktieren")
+
+        self.assertEqual(resolution.status, "match")
+        self.assertEqual([action["name"] for action in resolution.actions], ["Landing Gear Deploy", "Hangar Call"])
+
+    def test_small_typo_in_long_word_still_matches(self):
+        resolution = resolve_utterance(self.actions, "Hangar kontaktierne")
+
+        self.assertEqual(resolution.status, "match")
+        self.assertEqual(resolution.actions[0]["name"], "Hangar Call")
+
+    def test_shared_keywords_without_distinguishing_word_are_ambiguous(self):
+        resolution = resolve_utterance(self.actions, "cargo hangar call")
+
+        self.assertEqual(resolution.status, "ambiguous")
+        self.assertEqual(resolution.actions, ())
+
+    def test_on_and_off_pairs_do_not_collide(self):
+        actions = parse_action_catalog(
+            "Power On => power on => Button5 => {EN} powered on\n"
+            "Power Off => power off => Button6 => {EN} powered off"
+        )
+
+        resolution = resolve_utterance(actions, "power off")
+
+        self.assertEqual(resolution.status, "match")
+        self.assertEqual([action["name"] for action in resolution.actions], ["Power Off"])
+
+    def test_questions_are_not_executed(self):
+        self.assertEqual(resolve_utterance(self.actions, "Kannst du das Fahrwerk ausfahren?").status, "question")
+        self.assertEqual(resolve_utterance(self.actions, "Wie fahre ich das Fahrwerk aus").status, "question")
+
+    def test_unrelated_request_has_no_match(self):
+        self.assertEqual(resolve_utterance(self.actions, "Perform the requested action").status, "none")
+
+    def test_reply_follows_requested_language_with_fallback(self):
+        hangar = self.actions[2]
+
+        self.assertEqual(action_reply(hangar, "German"), "Verbindung zum Hangar hergestellt.")
+        self.assertEqual(action_reply(hangar, "English"), "Hangar contacted")
+        self.assertEqual(action_reply(hangar, "French"), "Verbindung zum Hangar hergestellt.")
+
+    def test_reply_language_tags(self):
+        self.assertEqual(reply_language_tag("German"), "DE")
+        self.assertEqual(reply_language_tag("english"), "EN")
+        self.assertEqual(reply_language_tag("Spanish"), "")
 
 
 if __name__ == "__main__":

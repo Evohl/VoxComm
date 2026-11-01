@@ -15,6 +15,8 @@ from pathlib import Path
 
 BUTTON_COUNT = 100
 DEVICE_NAME = "VoxComm"
+TAP_SECONDS = 0.05
+HOLD_SECONDS = 1.0
 
 
 def button_codes() -> tuple[int, ...]:
@@ -93,7 +95,7 @@ class VirtualGamepad:
         )
         self._lock = threading.Lock()
 
-    def tap(self, button: object, duration: float = 0.05) -> str:
+    def tap(self, button: object, duration: float = TAP_SECONDS) -> str:
         from evdev import ecodes
 
         code, name = normalize_button(button)
@@ -133,13 +135,15 @@ def _send_command(command: dict[str, object]) -> dict[str, object]:
     return result
 
 
-def press_gamepad_button(button: object, delay: float = 0) -> str:
+def press_gamepad_button(button: object, delay: float = 0, hold: bool = False) -> str:
     _code, name = normalize_button(button)
     if isinstance(delay, bool) or not isinstance(delay, (int, float)) or not math.isfinite(delay) or not 0 <= delay <= 3600:
         raise ValueError("delay must be between 0 and 3600 seconds")
+    if not isinstance(hold, bool):
+        raise ValueError("hold must be true or false")
     if delay:
         time.sleep(delay)
-    result = _send_command({"command": "press", "button": name})
+    result = _send_command({"command": "press", "button": name, "hold": hold})
     return str(result.get("button", name))
 
 
@@ -186,7 +190,10 @@ def _serve() -> None:
                     if command == "status":
                         response = {"running": True, "device": DEVICE_NAME, "buttons": BUTTON_COUNT}
                     elif command == "press":
-                        pressed = device.tap(payload.get("button"))
+                        hold = payload.get("hold", False)
+                        if not isinstance(hold, bool):
+                            raise ValueError("hold must be true or false")
+                        pressed = device.tap(payload.get("button"), HOLD_SECONDS if hold else TAP_SECONDS)
                         response = {"ok": True, "button": pressed}
                     elif command == "stop":
                         response = {"ok": True}
@@ -261,6 +268,8 @@ def main() -> int:
     press_parser.add_argument("button", help="Button1 through Button100")
     press_parser.add_argument("--delay", type=float, default=0, metavar="SECONDS",
                               help="wait before pressing the button (0 to 3600 seconds)")
+    press_parser.add_argument("--hold", action="store_true",
+                              help=f"hold the button for {HOLD_SECONDS:g} second instead of a short tap")
     arguments = parser.parse_args()
     if arguments.daemon:
         _serve()
@@ -276,7 +285,7 @@ def main() -> int:
         elif arguments.action == "status":
             message = status()
         else:
-            message = f"Pressed {press_gamepad_button(arguments.button, arguments.delay)}"
+            message = f"Pressed {press_gamepad_button(arguments.button, arguments.delay, arguments.hold)}"
     except (OSError, RuntimeError, ValueError) as error:
         print(f"voxcomm-gamepad: {error}", file=sys.stderr)
         return 1

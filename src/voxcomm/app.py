@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 
 from voxcomm.audio import play_stream, prefetch, record_until_released, save_wav
 from voxcomm.branding import APP_ID, APP_NAME, install_launcher, make_app_icon
-from voxcomm.config import AppConfig, load_config, save_config
+from voxcomm.config import AppConfig, load_config, save_config, save_overlay_position
 from voxcomm.i18n import SUPPORTED_LANGUAGES, set_language, tr
 from voxcomm.mangohud import publish_status
 from voxcomm.providers import cloud, openai_tts, whisper_cpp
@@ -284,7 +284,7 @@ class SettingsDialog(QDialog):
         self.input_action_catalog = QPlainTextEdit(
             self.input_action_catalogs.get(active_profile, ""))
         self.input_action_catalog.setPlaceholderText(
-            tr("Action name => keywords|alias => ButtonN => short reply"))
+            tr("Action name => keywords + {set} => ButtonN [hold] => {DE} reply | {EN} reply"))
         self.input_action_catalog.setMinimumHeight(280)
         self.input_action_catalog.setMaximumHeight(360)
         self.action_catalog_section = self._section(tr("VoxComm Controller"), [(tr("Action catalog"), self.input_action_catalog)])
@@ -1406,6 +1406,8 @@ class Overlay(QMainWindow):
                 speech = SentenceStream(
                     cancel_event, on_first=lambda: self.events.speak.emit(speech, cancel_event, profile_voice))
             streamed = []
+            reply_language = (response_language_for_voice(profile_voice, self.config.response_language)
+                              if self.config.tts_provider == "wyoming" else self.config.response_language)
             try:
                 answer = chat(
                     self.config.llm_provider,
@@ -1416,8 +1418,7 @@ class Overlay(QMainWindow):
                         piper_voice=profile_voice if self.config.tts_provider == "wyoming" else "",
                         special_prompt_name=profile_name,
                         special_prompt=self.config.special_prompts.get(profile_name, ""),
-                        fallback_language=(response_language_for_voice(profile_voice, self.config.response_language)
-                                           if self.config.tts_provider == "wyoming" else self.config.response_language),
+                        fallback_language=reply_language,
                         global_prompt=self.config.global_prompt,
                     ),
                     enabled_tools=enabled_tools,
@@ -1428,6 +1429,7 @@ class Overlay(QMainWindow):
                     thinking=self.config.llm_thinking_overrides.get(
                         profile_name or "__global__", self.config.llm_thinking),
                     on_status=lambda status: self.events.activity.emit(status, cancel_event),
+                    reply_language=reply_language,
                 )
                 if speech is not None and not streamed and not cancel_event.is_set():
                     speech.feed(answer)
@@ -1542,7 +1544,7 @@ class Overlay(QMainWindow):
         position = self.pos()
         self.config.overlay_x = position.x()
         self.config.overlay_y = position.y()
-        save_config(self.config)
+        save_overlay_position(position.x(), position.y())
 
     def moveEvent(self, event):
         super().moveEvent(event)

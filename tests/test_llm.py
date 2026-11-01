@@ -143,7 +143,7 @@ class StreamingTests(unittest.TestCase):
         answer = chat(
             "ollama", "http://h:11434", "m", "Bitte das Fahrwerk ausfahren, wenn m\u00f6glich",
             enabled_tools=["input_control"],
-            input_actions="Gear On => gear down => Button3 => Gear extended\nGear Off => gear up => Button4 => Gear retracted",
+            input_actions="Gear On => fahrwerk => Button3 => {EN} Gear extended\nGear Check => fahrwerk => Button4 => {EN} Gear checked",
             on_text=deltas.append,
             on_status=statuses.append,
         )
@@ -151,7 +151,7 @@ class StreamingTests(unittest.TestCase):
         self.assertEqual(answer, "Fahrwerk ausgefahren.")
         self.assertEqual(deltas, ["Fahrwerk ausgefahren."])
         self.assertEqual(statuses, ["Waiting for model response …", "Controller action: Gear On …", "Model is processing results …"])
-        press.assert_called_once_with("Button3")
+        press.assert_called_once_with("Button3", hold=False)
 
 
 class ThinkingTests(unittest.TestCase):
@@ -360,15 +360,15 @@ class ModelDiscoveryTests(unittest.TestCase):
             {"content": "OK, Landing Gear toggled."},
         ]
 
-        answer = chat("ollama", "http://localhost:11434", "model", "Toggle landing gear",
+        answer = chat("ollama", "http://localhost:11434", "model", "Can you toggle landing gear?",
                       enabled_tools=["input_control"],
                       input_actions=(
-                          "Landing Gear On => landing gear on => Button12 => Landing gear on\n"
-                          "Landing Gear Off => landing gear off => Button13 => Landing gear off"
+                          "Landing Gear On => landing gear on => Button12 => {EN} Landing gear on\n"
+                          "Landing Gear Off => landing gear off => Button13 => {EN} Landing gear off"
                       ))
 
         self.assertEqual(answer, "OK, Landing Gear toggled.")
-        press.assert_called_once_with("Button12")
+        press.assert_called_once_with("Button12", hold=False)
         first_tools = request.call_args_list[0].args[4]
         self.assertEqual([tool["name"] for tool in first_tools], ["input_control"])
         self.assertEqual(list(first_tools[0]["parameters"]["properties"]), ["action"])
@@ -381,31 +381,65 @@ class ModelDiscoveryTests(unittest.TestCase):
         system_message = request.call_args_list[0].args[3][0]["content"]
         self.assertIn("Never send keyboard input", system_message)
 
+    @patch("voxcomm.providers.llm.thinking_options", return_value=["off", "on"])
     @patch("voxcomm.providers.llm.press_gamepad_button", return_value="Button1")
     @patch("voxcomm.providers.llm._request")
-    def test_catalog_action_executes_without_model_round_trip(self, request, press):
+    def test_ambiguous_request_goes_to_model_with_thinking_off(self, request, press, _options):
+        request.side_effect = [
+            {"tool_calls": [{"function": {"name": "input_control", "arguments": {"action": "Flight Systems On"}}}]},
+            {"content": "Flight Systeme eingeschaltet."},
+        ]
+
         answer = chat(
-            "ollama", "http://localhost:11434", "unused-model", "Flight ready bitte",
+            "ollama", "http://localhost:11434", "model", "flight ready",
             enabled_tools=["input_control"],
             input_actions=(
-                "Flight Systems On => flight ready|systeme ein => Button1 => Flight Systems eingeschaltet\n"
-                "Flight Systems Off => flight systems off|systeme aus => Button2 => Flight Systems ausgeschaltet"
+                "Flight Systems On => flight ready => Button1 => {EN} Flight systems on\n"
+                "Flight Ready Check => flight ready => Button2 => {EN} Ready"
             ),
         )
 
-        self.assertEqual(answer, "Flight Systems eingeschaltet")
-        press.assert_called_once_with("Button1")
+        self.assertEqual(answer, "Flight Systeme eingeschaltet.")
+        press.assert_called_once_with("Button1", hold=False)
+        self.assertIs(request.call_args_list[0].kwargs["think"], False)
+        keyword_schema = request.call_args_list[0].args[4][0]["parameters"]["properties"]["action"]["description"]
+        self.assertIn("Flight Systems On = flight ready", keyword_schema)
+
+    @patch("voxcomm.providers.llm.thinking_options", return_value=["low", "high"])
+    @patch("voxcomm.providers.llm._request", return_value={"content": "Hi"})
+    def test_thinking_is_left_alone_when_model_cannot_turn_it_off(self, request, _options):
+        chat(
+            "ollama", "http://localhost:11434", "model", "flight ready", enabled_tools=["input_control"],
+            input_actions=(
+                "Flight Systems On => flight ready => Button1 => {EN} enabled\n"
+                "Flight Ready Check => flight ready => Button2 => {EN} ready"
+            ),
+        )
+
+        self.assertIsNone(request.call_args.kwargs["think"])
+
+    @patch("voxcomm.providers.llm.press_gamepad_button", return_value="Button64")
+    @patch("voxcomm.providers.llm._request")
+    def test_hold_action_is_sent_as_held_button(self, request, press):
+        answer = chat(
+            "ollama", "http://localhost:11434", "model", "Scheinwerfer an",
+            enabled_tools=["input_control"],
+            input_actions="Headlights On => headlights|scheinwerfer + on|an => Button64 hold => {EN} Headlights on.",
+        )
+
+        self.assertEqual(answer, "Headlights on.")
+        press.assert_called_once_with("Button64", hold=True)
         request.assert_not_called()
 
     @patch("voxcomm.providers.llm.press_gamepad_button")
     @patch("voxcomm.providers.llm._request", return_value={"content": "Erklaerung"})
     def test_catalog_does_not_execute_questions(self, request, press):
         chat(
-            "ollama", "http://localhost:11434", "model", "Wie schalte ich Flight ready?",
+            "ollama", "http://localhost:11434", "model", "Wie schalte ich flight ready?",
             enabled_tools=["input_control"],
             input_actions=(
-                "Flight Systems On => flight ready => Button1 => enabled\n"
-                "Flight Systems Off => flight systems off => Button2 => disabled"
+                "Flight Systems On => flight ready => Button1 => {EN} enabled\n"
+                "Flight Systems Off => flight systems off => Button2 => {EN} disabled"
             ),
         )
 
@@ -428,40 +462,48 @@ class ModelDiscoveryTests(unittest.TestCase):
     }]})
     def test_legacy_keyboard_arguments_do_not_trigger_controller_input(self, request, press):
         chat(
-            "ollama", "http://localhost:11434", "model", "Perform the requested action",
+            "ollama", "http://localhost:11434", "model", "Perform the requested action?",
             enabled_tools=["input_control"],
             input_actions=(
-                "Power On => power on => Button5 => powered on\n"
-                "Power Off => power off => Button6 => powered off"
+                "Power On => power on => Button5 => {EN} powered on\n"
+                "Power Off => power off => Button6 => {EN} powered off"
             ),
         )
 
         press.assert_not_called()
         self.assertEqual(request.call_count, 2)
 
-    @patch("voxcomm.providers.llm.press_gamepad_button", return_value="Button5")
+    @patch("voxcomm.providers.llm.press_gamepad_button")
     @patch("voxcomm.providers.llm._request")
-    def test_multiple_input_calls_in_one_response_execute_only_the_first(self, request, press):
-        request.side_effect = [
-            {"tool_calls": [
-                {"function": {"name": "input_control", "arguments": {"action": "Power On"}}},
-                {"function": {"name": "input_control", "arguments": {"action": "Power Off"}}},
-            ]},
-            {"content": "Done"},
-        ]
-
+    def test_unmatched_request_gets_short_reply_without_model(self, request, press):
         answer = chat(
-            "ollama", "http://localhost:11434", "model", "Please do the system change",
+            "ollama", "http://localhost:11434", "model", "Perform the requested action",
             enabled_tools=["input_control"],
             input_actions=(
-                "Power On => turn power on => Button5 => powered on\n"
-                "Power Off => turn power off => Button6 => powered off"
+                "Power On => power on => Button5 => {EN} powered on\n"
+                "Power Off => power off => Button6 => {EN} powered off"
             ),
         )
 
-        self.assertEqual(answer, "Done")
-        press.assert_called_once_with("Button5")
-        self.assertEqual(request.call_count, 2)
+        self.assertEqual(answer, "Command not recognized. Please repeat it.")
+        press.assert_not_called()
+        request.assert_not_called()
+
+    @patch("voxcomm.providers.llm.press_gamepad_button")
+    @patch("voxcomm.providers.llm._request")
+    def test_several_clauses_press_each_matching_action(self, request, press):
+        answer = chat(
+            "ollama", "http://localhost:11434", "model", "Power on und power off",
+            enabled_tools=["input_control"],
+            input_actions=(
+                "Power On => power on => Button5 => {EN} powered on\n"
+                "Power Off => power off => Button6 => {EN} powered off"
+            ),
+        )
+
+        self.assertEqual(answer, "powered on powered off")
+        self.assertEqual([call.args for call in press.call_args_list], [("Button5",), ("Button6",)])
+        request.assert_not_called()
 
     def test_yesterday_query_preserves_user_domain_and_resolves_relative_date(self):
         now = datetime(2026, 10, 29, 12, 0, tzinfo=timezone.utc)

@@ -13,6 +13,7 @@
 - Selectable chat backend: local Ollama, Ollama Cloud with an API key, or llama.cpp.
 - A global prompt plus manually selected or hotkey-activated specialty prompts.
 - Optional web search, enabled independently for the global prompt or each specialty profile.
+- Optional controller actions: keyword-matched voice commands press buttons on a virtual game controller, as taps or 1 s holds.
 - Optional automatic speech output and replay of the last answer.
 - Tray mode, draggable overlay, remembered position, and a reset control.
 
@@ -164,21 +165,23 @@ Edit **Global** to change the always-active base prompt. Specialty profiles add 
 
 The **Web search** permission is off by default and is configured independently for Global and each specialty profile. When enabled and the provider is `ollama-cloud`, searches run through Ollama's `/api/web_search`; with any other provider they use DDGS. Either way the recognized user request and generated search query leave the machine, results are limited to five short snippets, and they reach the model as untrusted reference data — the boundary described under [Tool-use boundaries](#tool-use-boundaries) is unchanged. Search results are limited to five short snippets and are passed to the model as untrusted reference data. VoxComm does not automatically open result URLs. Time-sensitive queries (for example, weather tomorrow or today's headlines) are searched immediately using the local system date; if the model says it does not know, VoxComm searches once and asks it to answer from the results. If the model still cannot answer, VoxComm displays the results with their source links.
 
-The **VoxComm controller actions** permission is off by default and is configured independently for Global and every specialty profile. When enabled, the model can select only a named action from that profile's catalog; it cannot send keyboard input or invent button numbers. Each action sends one tap to the virtual VoxComm controller. Catalog lines use `Action Name => keyword|alias => ButtonN => short reply`. Use separate On and Off lines for explicit state-setting controls; single lines are valid for toggles and one-shot actions:
+The **VoxComm controller actions** permission is off by default and is configured independently for Global and every specialty profile. When enabled, the model can select only a named action from that profile's catalog; it cannot send keyboard input or invent button numbers. Each action sends a 50 ms tap to the virtual VoxComm controller, or a 1 s hold when its button is written as `ButtonN hold`. Catalog lines use `Name => keyword groups => ButtonN [hold] => {DE} reply | {EN} reply`. Keyword groups use `+` for AND and `,` or `|` for OR; `{set}` references point to synonym sets defined on their own lines. Use separate On and Off actions for explicit state-setting controls; single lines are valid for toggles and one-shot actions:
 
 ```text
-Hail Target => hail target|hail selected target|ziel anfunken => Button40 => Ziel anfunken.
-Headlights On => headlights on|turn headlights on|scheinwerfer an => Button64 => Scheinwerfer an.
-Headlights Off => headlights off|turn headlights off|scheinwerfer aus => Button65 => Scheinwerfer aus.
+{deploy}: deploy, ausfahren, ausklappen
+{retract}: retract, einfahren, einklappen
+Landing Gear Deploy => landing gear|fahrwerk + {deploy}, down => Button26 => {DE} Fahrwerk ausgefahren. | {EN} Landing gear deployed
+Landing Gear Retract => landing gear|fahrwerk + {retract}, up => Button27 => {DE} Fahrwerk eingefahren. | {EN} Landing gear retracted
+Headlights On => headlights|scheinwerfer + on|an => Button64 => {DE} Scheinwerfer an. | {EN} Headlights on.
 ```
 
-Existing keyboard-style catalog entries must be replaced with this controller format. VoxComm sends a short tap, not a held button; Star Citizen bindings that explicitly require a long press may therefore not work as expected. The feature requires the optional `evdev` input dependency, a running virtual controller, and write access to `/dev/uinput`.
+Existing keyboard-style catalog entries must be replaced with this controller format. A request is matched deterministically first, so clear requests run without a model call; the model is consulted only for questions or ambiguous requests. A request with several clauses (joined by `und`, `dann`, `danach`, `sowie`, `and`, `then`, `,` or `;`) runs each matching action. Each action needs its own button. An unmatched request replies `Command not recognized. Please repeat it.` Clarification questions from the model are remembered for 120 seconds so the next answer can complete the original request. Replies use the `DE` or `EN` text matching the response language and fall back to the first reply given. The clean example catalog is `sc_mappings/voxcomm-actions-clean.txt`. The feature requires the optional `evdev` input dependency, a running virtual controller, and write access to `/dev/uinput`.
 
 ### Virtual button controller
 
 On Linux, install the optional input dependency with `pip install -e '.[input]'`. When VoxComm starts, it automatically starts the virtual controller if it is not already running. It appears as **VoxComm** (a joystick/game controller) and exposes `Button1` through `Button100` as button-only events, with no sticks or axes. If VoxComm started the controller, it stops it when the application exits; a controller that was already running is left alone. `voxcomm-gamepad status` checks it. You only need `voxcomm-gamepad start` when you want to run the controller without launching VoxComm.
 
-To bind a virtual button in Star Citizen, open the game's controller binding and select **Bind Key** for the action. In a terminal, enter a delayed tap command such as `voxcomm-gamepad press Button1 --delay 5` and press Enter; within five seconds, return to the game while it is listening for the binding. Star Citizen should detect the **VoxComm** controller button. Repeat with the button number used by each action in the VoxComm profile catalog. For a quick check, `voxcomm-gamepad press Button1` taps immediately; `--delay 2` waits two seconds. Each press is a short 50 ms tap.
+To bind a virtual button in Star Citizen, open the game's controller binding and select **Bind Key** for the action. In a terminal, enter a delayed tap command such as `voxcomm-gamepad press Button1 --delay 5` and press Enter; within five seconds, return to the game while it is listening for the binding. Star Citizen should detect the **VoxComm** controller button. Repeat with the button number used by each action in the VoxComm profile catalog. For a quick check, `voxcomm-gamepad press Button1` taps immediately; `--delay 2` waits two seconds. Each press is a short 50 ms tap; add `--hold` to hold the button for 1 second instead (for example `voxcomm-gamepad press Button1 --hold`).
 
 `voxcomm-gamepad stop` removes a manually started controller. The controller requires write permission for `/dev/uinput`. If needed, an administrator can grant access to the `input` group with a udev rule such as `KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"` in `/etc/udev/rules.d/99-uinput.rules`, then reload udev and reconnect the user session.
 
@@ -244,6 +247,8 @@ Project layout:
 - `src/voxcomm/streaming.py`: sentence splitting so replies are spoken while the model is still writing.
 - `src/voxcomm/ptt.py`: keyboard and controller-button push-to-talk.
 - `src/voxcomm/input_control.py`: validated local keyboard taps via Linux uinput.
+- `src/voxcomm/action_catalog.py`: controller action catalog parsing and keyword matching.
+- `src/voxcomm/gamepad.py`: virtual controller, tap/hold presses and the `voxcomm-gamepad` CLI.
 - `src/voxcomm/providers/wyoming.py`: Wyoming Whisper and Piper protocol.
 - `src/voxcomm/providers/whisper_cpp.py`: whisper.cpp HTTP speech recognition.
 - `src/voxcomm/providers/openai_tts.py`: OpenAI-compatible speech output.

@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import datetime, timedelta
 
 import httpx
 from threading import Event
 
-from voxcomm.action_catalog import match_action, parse_action_catalog
+from voxcomm.action_catalog import action_reply, parse_action_catalog, resolve_utterance
 from voxcomm.i18n import tr
 from voxcomm.providers.cloud import CloudAuthError, list_cloud_models, web_search as cloud_web_search
 from voxcomm.providers.web import search_web
@@ -36,10 +37,10 @@ LIVE_INFO_REFUSAL_PATTERN = re.compile(
 )
 
 
-def press_gamepad_button(button: object) -> str:
+def press_gamepad_button(button: object, hold: bool = False) -> str:
     from voxcomm.gamepad import press_gamepad_button as send_button
 
-    return send_button(button)
+    return send_button(button, hold=hold)
 
 
 WEB_SEARCH_TOOL = {
@@ -70,6 +71,13 @@ INPUT_CONTROL_TOOL = {
 }
 
 
+def _action_keyword_summary(actions: list[dict[str, object]]) -> str:
+    return "; ".join(
+        f"{action['name']} = " + " + ".join(" | ".join(group) for group in action["keywords"])
+        for action in actions
+    )
+
+
 def _input_control_tool(actions: list[dict[str, object]]) -> dict:
     tool = {
         "name": INPUT_CONTROL_TOOL["name"],
@@ -80,7 +88,11 @@ def _input_control_tool(actions: list[dict[str, object]]) -> dict:
                 "action": {
                     "type": "string",
                     "enum": [action["name"] for action in actions],
-                    "description": "Choose one configured controller action by name",
+                    "description": (
+                        "Choose one configured controller action by name. Keyword groups per action (+ separates "
+                        "groups, | separates alternatives). An action matches when every group has an alternative in "
+                        "the request, in any language or inflection: " + _action_keyword_summary(actions)
+                    ),
                 },
             },
             "required": ["action"],
@@ -279,6 +291,7 @@ def _execute_tool(
     input_actions: list[dict[str, object]] | None = None,
     *,
     search=search_web,
+    reply_language: str = "",
 ) -> str:
     function = call.get("function", {})
     name = function.get("name", "")
@@ -301,8 +314,8 @@ def _execute_tool(
             result = {"ok": False, "error": "Choose a configured controller action"}
         else:
             try:
-                press_gamepad_button(action["button"])
-                result = {"ok": True, "action": action["name"], "reply": action["reply"]}
+                press_gamepad_button(action["button"], hold=bool(action.get("hold")))
+                result = {"ok": True, "action": action["name"], "reply": action_reply(action, reply_language)}
             except Exception as error:
                 result = {"ok": False, "error": str(error)[:300]}
     else:
@@ -355,6 +368,28 @@ def _search_fresh_info(prompt: str, now: datetime, search=search_web) -> list[di
     return search(_dated_search_query(prompt, now))
 
 
+_CLARIFICATION_SECONDS = 120
+_CLARIFICATIONS: dict[str, tuple[float, str, str]] = {}
+
+
+def _take_clarification(key: str) -> tuple[str, str] | None:
+    entry = _CLARIFICATIONS.pop(key, None)
+    if entry is None or time.monotonic() - entry[0] > _CLARIFICATION_SECONDS:
+        return None
+    return entry[1], entry[2]
+
+
+def _press_actions(actions: tuple[dict[str, object], ...], reply_language: str) -> str:
+    replies = []
+    for action in actions:
+        try:
+            press_gamepad_button(action["button"], hold=bool(action["hold"]))
+        except Exception as error:
+            return tr("Input was not sent: {error}", error=str(error)[:300])
+        replies.append(action_reply(action, reply_language))
+    return " ".join(replies)
+
+
 def chat(
     provider: str,
     base_url: str,
@@ -368,6 +403,7 @@ def chat(
     on_text=None,
     thinking: str = "",
     on_status=None,
+    reply_language: str = "",
 ) -> str:
     def cancelled() -> bool:
         return cancel_event is not None and cancel_event.is_set()
@@ -384,20 +420,15 @@ def chat(
             input_action_entries = parse_action_catalog(input_actions)
         except ValueError as error:
             return tr("Action catalog is invalid: {error}", error=error)
-    if "input_control" in enabled_tools and input_actions.strip():
-        try:
-            action = match_action(input_actions, prompt)
-        except ValueError as error:
-            return tr("Action catalog is invalid: {error}", error=error)
-        if action is not None:
-            if cancelled():
-                return ""
-            try:
-                report_status(tr("Controller action: {action} …", action=action["name"]))
-                button = press_gamepad_button(action["button"])
-                return str(action["reply"])
-            except Exception as error:
-                return tr("Input was not sent: {error}", error=str(error)[:200])
+    pending = None
+    resolution = None
+    if input_action_entries:
+        pending = _take_clarification(input_actions)
+        resolution = resolve_utterance(input_action_entries, prompt)
+        if resolution.status == "match":
+            return _press_actions(resolution.actions, reply_language)
+        if resolution.status == "none" and pending is None:
+            return tr("Command not recognized. Please repeat it.")
     if not model.strip():
         return tr("No language model configured. Set a model in Settings.")
     base_url = base_url.rstrip("/")
@@ -416,6 +447,13 @@ def chat(
     enabled_tool_names = set(enabled_tools) & {"web_search", "input_control"}
     if not input_action_entries:
         enabled_tool_names.discard("input_control")
+    if (
+        "input_control" in enabled_tool_names
+        and provider in ("ollama", "ollama-cloud")
+        and "off" in thinking_options(provider, base_url, model, api_key)
+    ):
+        # Keyword selection must be fast and precise; disable thinking when the model supports it.
+        think = False
     web_search_enabled = "web_search" in enabled_tool_names
     tool_definitions = [WEB_SEARCH_TOOL] if web_search_enabled else []
     if "input_control" in enabled_tool_names:
@@ -423,14 +461,12 @@ def chat(
     input_control_attempted = False
     if "input_control" in enabled_tool_names:
         input_note = (
-            "ACTION MODE: VoxComm controller actions are enabled for this profile. When the user requests a "
-            "specific state change, choose its matching configured On or Off action when available. For a "
-            "configured single/toggle action, call it only when the user's request clearly names that action. "
-            "Never send keyboard input, invent a button, or substitute a toggle for an explicit On/Off action. "
-            "If no matching action is configured or the requested state is unclear, ask one concise clarifying "
-            "question and do not send input. After the tool result, respond briefly without repeating the action "
-            "name, button number, or saying 'command sent'. Do not claim the application's state changed unless "
-            "independently observed."
+            "ACTION MODE: VoxComm controller actions are enabled for this profile. The keyword matcher could not "
+            "decide this request, so pick the one configured action whose keyword groups all match the request. "
+            "Call input_control only when exactly one action matches. Never send keyboard input, invent a button, "
+            "or act on a question. If no action or several actions match, ask one short clarifying question and do "
+            "not send input. After the tool result, respond briefly without repeating the action name, button number, "
+            "or saying 'command sent'. Do not claim the application's state changed unless independently observed."
         )
         if messages:
             messages[0]["content"] += "\n\n" + input_note
@@ -447,6 +483,10 @@ def chat(
     request_started = False
     search_fallback = ""
     user_content = prompt
+    if pending is not None:
+        user_content = (
+            f"Earlier request: {pending[0]}\nYour clarifying question: {pending[1]}\nUser answer: {prompt}"
+        )
     if web_search_enabled and FRESH_INFO_PATTERN.search(prompt):
         try:
             query_preview = _dated_search_query(prompt, local_now)[:60]
@@ -491,6 +531,8 @@ def chat(
         calls = _tool_calls(provider, message) if available_tools else []
         if not calls:
             answer = str(message.get("content") or "").strip()
+            if resolution is not None and resolution.status == "ambiguous" and answer.endswith("?"):
+                _CLARIFICATIONS[input_actions] = (time.monotonic(), prompt, answer)
             if web_search_enabled and not search_fallback and (not answer or LIVE_INFO_REFUSAL_PATTERN.search(answer)):
                 try:
                     query_preview = _dated_search_query(prompt, local_now)[:60]
@@ -540,7 +582,8 @@ def chat(
                         report_status(tr("Web search: {query}{ellipsis}", query=query_preview,
                                          ellipsis="…" if len(query) > 60 else "")
                                       if query_preview else tr("Web search in progress …"))
-                    result = _execute_tool(call, enabled_tool_names, input_action_entries, search=search)
+                    result = _execute_tool(call, enabled_tool_names, input_action_entries, search=search,
+                                           reply_language=reply_language)
                 executed += 1
             if cancelled():
                 return ""

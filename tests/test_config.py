@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 
-from voxcomm.config import AppConfig, config_path, load_config, save_config
+from voxcomm.config import AppConfig, config_path, load_config, save_config, save_overlay_position
 
 
 class ConfigTests(unittest.TestCase):
@@ -52,6 +52,29 @@ class ConfigTests(unittest.TestCase):
 
             self.assertEqual(load_config(path), original)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_save_keeps_previous_file_as_backup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            save_config(AppConfig(special_prompts={"Star Citizen": "Flight context"}), path)
+            previous = path.read_text(encoding="utf-8")
+
+            save_config(AppConfig(), path)
+
+            self.assertEqual(path.with_name("config.toml.bak").read_text(encoding="utf-8"), previous)
+
+    def test_overlay_position_save_keeps_other_settings_on_disk(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            save_config(AppConfig(special_prompts={"Star Citizen": "Flight context"},
+                                  input_action_catalogs={"Star Citizen": "ready => Button1"}), path)
+
+            save_overlay_position(300, 40, path)
+
+            stored = load_config(path)
+            self.assertEqual((stored.overlay_x, stored.overlay_y), (300, 40))
+            self.assertEqual(stored.special_prompts, {"Star Citizen": "Flight context"})
+            self.assertEqual(stored.input_action_catalogs, {"Star Citizen": "ready => Button1"})
 
     def test_missing_file_uses_defaults(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -1,0 +1,116 @@
+# VoxComm controller actions (Star Citizen)
+#
+# Format:
+#   Action name => keyword groups => ButtonN [hold] => {DE} reply | {EN} reply
+#
+# Keyword groups:
+#   +            AND between groups: every group needs one match in the request
+#   , or |       OR inside a group: any alternative matches
+#   {set}        reusable keyword set (defined below, expanded inside groups)
+#   ButtonN hold press and hold for about 1 second (default: tap)
+#
+# Lines starting with # are ignored. Sets are defined with {name}: keyword, keyword
+# Matching ignores case, umlauts (ä=ae, ö=oe, ü=ue), and simple inflections.
+
+{call}: call, hail, rufen, kontaktieren, anrufen
+{deploy}: deploy, ausfahren, ausklappen, herunterfahren
+{retract}: retract, einfahren, einklappen, hochfahren
+{aktivieren}: an, on, aktivieren, einschalten, enable, activate
+{deaktivieren}: aus, off, deaktivieren, ausschalten, disable, deactivate
+{sperren}: sperren, verriegeln, lock
+{entsperren}: entsperren, entriegeln, unlock
+
+# Inactive (assigned but not in prompt):
+# Lock All Doors => tueren, doors + {sperren} => Button14 => {DE} Tueren verriegelt. | {EN} Doors locked.
+# Unlock All Doors => tueren, doors + {entsperren} => Button15 => {DE} Tueren entriegelt. | {EN} Doors unlocked.
+# Port Lock All => ports, port + {sperren} => Button16 => {DE} Ports verriegelt. | {EN} Ports locked.
+# Port Unlock All => ports, port + {entsperren} => Button17 => {DE} Ports entriegelt. | {EN} Ports unlocked.
+
+# Operator modes
+Mining Operator Mode => operator mode + mining => Button1 => {DE} Bergbau-Modus gewählt. | {EN} Mining mode selected.
+Salvage Operator Mode => operator mode  salvage => Button2 => {DE} Bergungs-Modus gewählt. | {EN} Salvage mode selected.
+Refuel Operator Mode => operator mode + refuel, tanken => Button3 => {DE} Auftank-Modus gewählt. | {EN} Refuel mode selected.
+Scanning Operator Mode => operator mode + scanning, scannen, scanner => Button4 => {DE} Scan-Modus gewählt. | {EN} Scanning mode selected.
+Quantum Operator Mode => operator mode + quantum => Button5 hold => {DE} Quantum-Modus gewählt. | {EN} Quantum mode selected.
+Missile Operator Mode => operator mode + missile, raketen => Button6 => {DE} Raketen-Modus gewählt. | {EN} Missile mode selected.
+Guns Operator Mode => operator mode + guns, waffen => Button7 => {DE} Waffen-Modus gewählt. | {EN} Guns mode selected.
+Flight Operator Mode => operator mode + flight => Button8 => {DE} Flug-Modus gewählt. | {EN} Flight mode selected.
+
+# Lights and emergency
+Light Amplification On => light amplification, nightvision, lichtverstärkung, nachtsicht + {aktivieren} => Button9 => {DE} Lichtverstärkung an. | {EN} Light amplification on.
+Light Amplification Off => light amplification, nightvision, lichtverstärkung, nachtsicht + {deaktivieren} => Button10 => {DE} Lichtverstärkung aus. | {EN} Light amplification off.
+Self Destruct => self destruct, destroy ship, selbstzerstörung => Button11 hold => {DE} Selbstzerstörung initiiert. | {EN} Self-destruct initiated.
+
+# Doors
+Open All Doors => türen, doors + öffnen, open => Button12 => {DE} Türen geöffnet. | {EN} Doors opened.
+Close All Doors => türen, doors + schliessen, close => Button13 => {DE} Türen geschlossen. | {EN} Doors closed.
+
+# Cruise, decoupled, speed limiter, G-force
+Cruise Mode On => cruise, cruise mode + {aktivieren} => Button18 => {DE} Cruise Mode an. | {EN} Cruise mode on.
+Cruise Mode Off => cruise, cruise mode + {deaktivieren} => Button19 => {DE} Cruise Mode aus. | {EN} Cruise mode off.
+Decoupled Mode On => decoupled, entkoppelt + {aktivieren} => Button20 => {DE} Decoupled Mode an. | {EN} Decoupled mode on.
+Decoupled Mode Off => decoupled, entkoppelt + {deaktivieren} => Button21 => {DE} Decoupled Mode aus. | {EN} Decoupled mode off.
+Speed Limiter On => speed limiter, geschwindigkeitsbegrenzer + {aktivieren} => Button22 => {DE} Geschwindigkeitsbegrenzer an. | {EN} Speed limiter on.
+Speed Limiter Off => speed limiter, geschwindigkeitsbegrenzer + {deaktivieren} => Button23 => {DE} Geschwindigkeitsbegrenzer aus. | {EN} Speed limiter off.
+G-Force Safety On => g-force, g-kraft + sicherheit, safety + {aktivieren} => Button24 => {DE} G-Force-Sicherheit an. | {EN} G-force safety on.
+G-Force Safety Off => g-force, g-kraft + sicherheit, safety + {deaktivieren} => Button25 => {DE} G-Force-Sicherheit aus. | {EN} G-force safety off.
+
+# Landing gear: "Fahrwerk" or "landing gear" plus a verb or up/down
+Landing System Deploy => fahrwerk, landing gear + {deploy}, down, runter => Button26 => {DE} Fahrwerk ausgefahren. | {EN} Landing gear deployed.
+Landing System Retract => fahrwerk, landing gear + {retract}, up, hoch => Button27 => {DE} Fahrwerk eingefahren. | {EN} Landing gear retracted.
+
+# VTOL, autoland
+VTOL On => vtol + {aktivieren} => Button28 => {DE} VTOL an. | {EN} VTOL on.
+VTOL Off => vtol + {deaktivieren} => Button29 => {DE} VTOL aus. | {EN} VTOL off.
+Autoland => autoland, land automatically, automatisch landen => Button30 hold => {DE} Autoland angefordert. | {EN} Autoland requested.
+
+# Services: "Hangar" or "Cargo" plus a call verb
+Request Landing => hangar + {call} => Button31 => {DE} Landeanfrage gestellt. | {EN} Landing request sent.
+Request Cargo Loading => cargo + {call} => Button32 => {DE} Cargo-Verladung angefordert. | {EN} Cargo loading requested.
+
+# Master modes
+Master Mode NAV => navigation mode, navigationsmodus => Button33 => {DE} NAV-Modus gewählt. | {EN} NAV mode selected.
+Master Mode SCM => combat mode, kampfmodus => Button34 => {DE} SCM-Modus gewählt. | {EN} SCM mode selected.
+
+# Quantum and docking
+Request Quantum Jump => quantum jump, quantumsprung + anfragen, request => Button35 => {DE} Sprunganfrage gestellt. | {EN} Jump request sent.
+Engage Quantum Drive Hold => quantum, quantum + {aktivieren}, engage => Button36 hold => {DE} Quantumantrieb aktiviert. | {EN} Quantum drive engaged.
+Docking => docking, andocken + request, anfragen, start => Button37 => {DE} Andocken angefordert. | {EN} Docking requested.
+
+# Targeting and scanning
+Auto Targeting On => auto targeting, zielerfassung + {aktivieren} => Button38 => {DE} Zielerfassung an. | {EN} Auto targeting on.
+Auto Targeting Off => auto targeting, zielerfassung + {deaktivieren} => Button39 => {DE} Zielerfassung aus. | {EN} Auto targeting off.
+Hail Target => target, ziel + {call} => Button40 => {DE} Ziel angefunkt. | {EN} Target hailed.
+Activate Scanning => scanning, scan + {aktivieren} => Button41 => {DE} Scanning aktiviert. | {EN} Scanning activated.
+Jettison Cargo => cargo, ladung + jettison, dump, abwerfen => Button42 => {DE} Ladung abgeworfen. | {EN} Cargo jettisoned.
+
+# Gimbals and staggered fire
+Gimbal Locked => gimbal + {sperren} => Button43 => {DE} Gimbals gesperrt. | {EN} Gimbals locked.
+Gimbal Unlocked => gimbal + {entsperren} => Button44 => {DE} Gimbals entsperrt. | {EN} Gimbals unlocked.
+Staggered Fire On => staggered fire, versetztes feuern + {aktivieren} => Button45 => {DE} Versetztes Feuern an. | {EN} Staggered fire on.
+Staggered Fire Off => staggered fire, versetztes feuern + {deaktivieren} => Button46 => {DE} Versetztes Feuern aus. | {EN} Staggered fire off.
+Gunnery UI Magnification On => gunnery magnification, zielvisier vergroesserung + {aktivieren} => Button47 => {DE} Zielvisier-Vergrößerung an. | {EN} Gunnery magnification on.
+Gunnery UI Magnification Off => gunnery magnification, zielvisier vergroesserung + {deaktivieren} => Button48 => {DE} Zielvisier-Vergrößerung aus. | {EN} Gunnery magnification off.
+
+# Shields
+Shield Raise Level Front => schilde, shields + front, vorne + verstaerken, erhöhen, increase => Button49 => {DE} Schildenergie vorne erhöht. | {EN} Front shield energy raised.
+Shield Raise Level Back => schilde, shields + back, hinten + verstaerken, erhöhen, increase => Button50 => {DE} Schildenergie hinten erhöht. | {EN} Rear shield energy raised.
+Shield Raise Level Left => schilde, shields + left, links + verstaerken, erhöhen, increase => Button51 => {DE} Schildenergie links erhöht. | {EN} Left shield energy raised.
+Shield Raise Level Right => schilde, shields + right, rechts + verstaerken, erhöhen, increase => Button52 => {DE} Schildenergie rechts erhöht. | {EN} Right shield energy raised.
+Shield Raise Level Top => schilde, shields + top, oben + verstaerken, erhöhen, increase => Button53 => {DE} Schildenergie oben erhöht. | {EN} Top shield energy raised.
+Shield Raise Level Bottom => schilde, shields + bottom, unten + verstaerken, erhöhen, increase => Button54 => {DE} Schildenergie unten erhöht. | {EN} Bottom shield energy raised.
+Shield Reset Levels => schilde, shields + reset, zuruecksetzen => Button55 => {DE} Schildverteilung zurückgesetzt. | {EN} Shield distribution reset.
+
+# Ship systems
+Ship Power On => schiffssysteme, ship power + {aktivieren} => Button56 => {DE} Schiffssysteme an. | {EN} Ship systems on.
+Ship Power Off => schiffssysteme, ship power + {deaktivieren} => Button57 => {DE} Schiffssysteme aus. | {EN} Ship systems off.
+Thrusters Power On => triebwerke, thrusters + {aktivieren} => Button58 => {DE} Triebwerke an. | {EN} Thrusters on.
+Thrusters Power Off => triebwerke, thrusters + {deaktivieren} => Button59 => {DE} Triebwerke aus. | {EN} Thrusters off.
+Shields Power On => schilde, shields + {aktivieren} => Button60 => {DE} Schilde an. | {EN} Shields on.
+Shields Power Off => schilde, shields + {deaktivieren} => Button61 => {DE} Schilde aus. | {EN} Shields off.
+Weapons Power On => waffen, weapons + {aktivieren} => Button62 => {DE} Waffen an. | {EN} Weapons on.
+Weapons Power Off => waffen, weapons + {deaktivieren} => Button63 => {DE} Waffen aus. | {EN} Weapons off.
+
+# Lights
+Headlights On => headlights, scheinwerfer + {aktivieren} => Button64 => {DE} Scheinwerfer an. | {EN} Headlights on.
+Headlights Off => headlights, scheinwerfer + {deaktivieren} => Button65 => {DE} Scheinwerfer aus. | {EN} Headlights off.
