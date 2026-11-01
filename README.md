@@ -145,9 +145,9 @@ A reachable port does not guarantee a healthy service or a configured model/voic
 
 Open **Settings** from the overlay or tray. Each section picks its own interface:
 
-In Star Citizen, VoxComm presents itself as a personal AI on the user's Mobiglas, not as a ship computer. The Game.log can announce a detected ship; ship-control access is reported as established only after the pilot seat is confirmed.
+In Star Citizen, the Game.log can announce a detected ship; ship-control access is reported as established only after the pilot seat is confirmed.
 
-Edit the assistant's role and speaking style in `${XDG_CONFIG_HOME:-~/.config}/voxcomm/persona.txt`. VoxComm creates this file from its bundled `persona.txt` template on first use; changes are read for each new request.
+Edit the assistant's role and speaking style in **Settings → Profiles → Profile** for the selected profile. These instructions are saved in the user's configuration and do not apply to other profiles.
 
 The interface language can be selected in **Settings** and takes effect after restarting VoxComm. English is the source language; additional translations live in `src/voxcomm/locales/<language>.json` and use the English message text as the key. Add a catalog and register its language in `voxcomm.i18n.SUPPORTED_LANGUAGES` to add another locale.
 

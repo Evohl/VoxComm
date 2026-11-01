@@ -80,6 +80,7 @@ Default section order:
 - `src/voxcomm/gamelog` preserves legacy imports for the Star Citizen skill's game-log implementation.
 - `src/voxcomm/config.py` owns base configuration and persistence; `src/voxcomm/profiles.py` resolves profile-specific settings and permissions.
 - `src/voxcomm/app.py` owns the current Qt UI and application orchestration; provider modules own service integrations.
+- User-defined prompt text comes only from the user's profile configuration; never load or create separate persona or prompt files.
 - Settings separate general services from profile settings, permissions, controller catalog, and Star Citizen log pages; global controller and announcement options remain visibly identified as applying to all profiles.
 - Hide profile module pages when their permissions are disabled. The controller page provides collapsible manual access to all virtual buttons; direct presses bypass catalog preconditions. Delayed presses are cancellable and cancelled when settings close, the profile changes, the controller permission is disabled, or the panel collapses.
 - Keep manual hold and delay controls compact; match the delay field's height to the numeric fields in general settings.

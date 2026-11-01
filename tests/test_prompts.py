@@ -4,29 +4,16 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from voxcomm.prompts import build_system_prompt, load_persona, response_language_for_voice
-
-
-TEST_PERSONA = (
-    "Du bist VoxComm, die persönliche KI des Nutzers auf seinem Mobiglas. "
-    "Du bist weder ein Schiffscomputer noch eine Schiffs-KI. Sprich nur Captain oder Commander an."
-)
+from voxcomm.prompts import build_system_prompt, response_language_for_voice
 
 
 class PromptTests(unittest.TestCase):
-    def setUp(self):
-        self._persona_patch = patch("voxcomm.prompts.load_persona", return_value=TEST_PERSONA)
-        self._persona_patch.start()
-
-    def tearDown(self):
-        self._persona_patch.stop()
-
     def test_piper_voice_selects_response_language(self):
         self.assertEqual(response_language_for_voice("de_DE-thorsten-medium"), "German")
         self.assertEqual(response_language_for_voice("en_US-amy-medium"), "English")
         self.assertEqual(response_language_for_voice("data", "English"), "English")
 
-    def test_prompt_contains_global_rule_mobiglas_persona_time_and_language(self):
+    def test_prompt_contains_global_rule_time_and_language(self):
         now = datetime(2026, 10, 29, 12, 0, tzinfo=timezone.utc)
         prompt = build_system_prompt(piper_voice="de_DE-thorsten-medium", current_time=now)
 
@@ -37,9 +24,8 @@ class PromptTests(unittest.TestCase):
             "unabhängig von der Sprache der Anfrage, des Profils oder des Kontexts. Wechsle nicht die Sprache."
         ))
         self.assertIn("Erfinde keine Fakten", prompt)
-        self.assertIn("persönliche KI des Nutzers auf seinem Mobiglas", prompt)
-        self.assertIn("weder ein Schiffscomputer noch eine Schiffs-KI", prompt)
-        self.assertIn("Captain oder Commander", prompt)
+        self.assertNotIn("Captain", prompt)
+        self.assertNotIn("Star Citizen", prompt)
 
     def test_prompt_optimizes_output_for_speech_before_the_profile(self):
         prompt = build_system_prompt(
@@ -95,22 +81,22 @@ class PromptTests(unittest.TestCase):
         self.assertIn(global_prompt, prompt)
         self.assertNotIn(global_prompt, special)
         self.assertIn("Profile-only instructions", special)
-        self.assertIn("persönliche KI des Nutzers auf seinem Mobiglas", prompt)
         self.assertNotIn("Copilot für Linux und den allgemeinen Desktop", prompt)
 
-    def test_persona_file_is_seeded_and_edits_are_read(self):
+    def test_external_persona_is_not_used_for_any_profile(self):
         with TemporaryDirectory() as directory:
-            persona_file = Path(directory) / "persona.txt"
+            persona_file = Path(directory) / "voxcomm" / "persona.txt"
+            persona_file.parent.mkdir()
+            persona_file.write_text("Captain: external persona", encoding="utf-8")
 
-            initial = load_persona(persona_file)
-            self.assertIn("moeglichst kompakt", initial)
-            self.assertNotIn("Star Citizen", initial)
-            self.assertNotIn("UEX", initial)
-            self.assertNotIn("Levski", initial)
-            self.assertTrue(persona_file.exists())
+            with patch.dict("os.environ", {"XDG_CONFIG_HOME": directory}):
+                default = build_system_prompt()
+                named = build_system_prompt(special_prompt_name="Work", special_prompt="Work instructions")
 
-            persona_file.write_text("Custom editable persona", encoding="utf-8")
-            self.assertEqual(load_persona(persona_file), "Custom editable persona")
+            self.assertNotIn("Captain: external persona", default)
+            self.assertNotIn("Captain: external persona", named)
+            self.assertIn("Work instructions", named)
+            self.assertEqual(persona_file.read_text(encoding="utf-8"), "Captain: external persona")
 
     def test_unknown_voice_uses_fallback_language(self):
         prompt = build_system_prompt(fallback_language="Deutsch")

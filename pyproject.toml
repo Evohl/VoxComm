@@ -28,4 +28,4 @@ voxcomm-gamepad = "voxcomm.gamepad:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-voxcomm = ["locales/*.json", "persona.txt"]
+voxcomm = ["locales/*.json"]
