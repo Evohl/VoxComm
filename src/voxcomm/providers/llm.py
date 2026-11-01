@@ -8,7 +8,16 @@ from datetime import datetime, timedelta
 import httpx
 from threading import Event
 
-from voxcomm.action_catalog import action_reply, parse_action_catalog, resolve_utterance
+from voxcomm.action_catalog import (
+    REQUIREMENT_TEXT,
+    UNKNOWN_STATE_TEXT,
+    action_reply,
+    apply_reply_overrides,
+    contains_keyword,
+    parse_action_catalog,
+    resolve_utterance,
+    unmet_requirement,
+)
 from voxcomm.i18n import tr
 from voxcomm.providers.cloud import CloudAuthError, list_cloud_models, web_search as cloud_web_search
 from voxcomm.providers.web import search_web
@@ -379,13 +388,23 @@ def _take_clarification(key: str) -> tuple[str, str] | None:
     return entry[1], entry[2]
 
 
+def _precondition_message(actions: tuple[dict[str, object], ...], state: dict[str, bool | None]) -> str:
+    for action in actions:
+        requirement = unmet_requirement(action, state)
+        if requirement is not None:
+            if state.get(requirement[0]) is None:
+                return tr(UNKNOWN_STATE_TEXT[requirement[0]])
+            return tr(REQUIREMENT_TEXT[requirement])
+    return ""
+
+
 def _press_actions(actions: tuple[dict[str, object], ...], reply_language: str) -> str:
     replies = []
     for action in actions:
         try:
             press_gamepad_button(action["button"], hold=bool(action["hold"]))
         except Exception as error:
-            return tr("Input was not sent: {error}", error=str(error)[:300])
+            return tr("Captain, controller input was not sent: {error}", error=str(error)[:300])
         replies.append(action_reply(action, reply_language))
     return " ".join(replies)
 
@@ -404,7 +423,13 @@ def chat(
     thinking: str = "",
     on_status=None,
     reply_language: str = "",
+    controller_mode: str = "hybrid",
+    llm_keyword: str = "",
+    game_state: dict[str, bool | None] | None = None,
+    reply_overrides: dict[tuple[str, str], str] | None = None,
 ) -> str:
+    state = game_state or {}
+
     def cancelled() -> bool:
         return cancel_event is not None and cancel_event.is_set()
 
@@ -417,20 +442,26 @@ def chat(
     input_action_entries = []
     if "input_control" in enabled_tools:
         try:
-            input_action_entries = parse_action_catalog(input_actions)
+            input_action_entries = apply_reply_overrides(parse_action_catalog(input_actions), reply_overrides or {})
         except ValueError as error:
-            return tr("Action catalog is invalid: {error}", error=error)
+            return tr("Captain, action catalog is invalid: {error}", error=error)
     pending = None
     resolution = None
+    # Modus "llm" sendet alles ans Modell; "hybrid" nur bei Stichwort, sonst Script.
+    to_model = controller_mode == "llm" or (controller_mode == "hybrid" and contains_keyword(prompt, llm_keyword))
     if input_action_entries:
         pending = _take_clarification(input_actions)
-        resolution = resolve_utterance(input_action_entries, prompt)
-        if resolution.status == "match":
-            return _press_actions(resolution.actions, reply_language)
-        if resolution.status == "none" and pending is None:
-            return tr("Command not recognized. Please repeat it.")
+        if not to_model:
+            resolution = resolve_utterance(input_action_entries, prompt)
+            if resolution.status == "match":
+                blocked = _precondition_message(resolution.actions, state)
+                if blocked:
+                    return blocked
+                return _press_actions(resolution.actions, reply_language)
+            if controller_mode == "script" or (resolution.status == "none" and pending is None):
+                return tr("Captain, command not recognized. Please repeat the command.")
     if not model.strip():
-        return tr("No language model configured. Set a model in Settings.")
+        return tr("Captain, no language model is configured. Select a model in Settings.")
     base_url = base_url.rstrip("/")
     if provider == "ollama-cloud" and not base_url:
         base_url = CLOUD_DEFAULT_BASE
@@ -455,19 +486,37 @@ def chat(
         # Keyword selection must be fast and precise; disable thinking when the model supports it.
         think = False
     web_search_enabled = "web_search" in enabled_tool_names
+    allowed_entries = []
+    blocked_notes = []
+    for action in input_action_entries:
+        requirement = unmet_requirement(action, state)
+        if requirement is None:
+            allowed_entries.append(action)
+        else:
+            message = (UNKNOWN_STATE_TEXT[requirement[0]] if state.get(requirement[0]) is None
+                       else REQUIREMENT_TEXT[requirement])
+            blocked_notes.append(f"{action['name']}: {message}")
     tool_definitions = [WEB_SEARCH_TOOL] if web_search_enabled else []
-    if "input_control" in enabled_tool_names:
-        tool_definitions.append(_input_control_tool(input_action_entries))
+    if "input_control" in enabled_tool_names and allowed_entries:
+        tool_definitions.append(_input_control_tool(allowed_entries))
     input_control_attempted = False
-    if "input_control" in enabled_tool_names:
-        input_note = (
-            "ACTION MODE: VoxComm controller actions are enabled for this profile. The keyword matcher could not "
-            "decide this request, so pick the one configured action whose keyword groups all match the request. "
-            "Call input_control only when exactly one action matches. Never send keyboard input, invent a button, "
-            "or act on a question. If no action or several actions match, ask one short clarifying question and do "
-            "not send input. After the tool result, respond briefly without repeating the action name, button number, "
-            "or saying 'command sent'. Do not claim the application's state changed unless independently observed."
-        )
+    if "input_control" in enabled_tool_names and (allowed_entries or blocked_notes):
+        input_note = "ACTION MODE: VoxComm controller actions are enabled for this profile. "
+        if allowed_entries:
+            input_note += (
+                ("The keyword matcher could not decide this request, so pick " if resolution is not None else "Pick ")
+                + "the one configured action whose keyword groups all match the request. "
+                "Call input_control only when exactly one action matches. Never send keyboard input, invent a button, "
+                "or act on a question. If no action or several actions match, ask one short clarifying question and do "
+                "not send input. After the tool result, respond briefly without repeating the action name, button number, "
+                "or saying 'command sent'. Do not claim the application's state changed unless independently observed."
+            )
+        if blocked_notes:
+            input_note += (
+                " These actions are unavailable in the current game state; never call input_control for them. "
+                "Instead tell the user briefly, in the user's language, what must happen first: "
+                + "; ".join(blocked_notes) + "."
+            )
         if messages:
             messages[0]["content"] += "\n\n" + input_note
         else:
@@ -531,7 +580,8 @@ def chat(
         calls = _tool_calls(provider, message) if available_tools else []
         if not calls:
             answer = str(message.get("content") or "").strip()
-            if resolution is not None and resolution.status == "ambiguous" and answer.endswith("?"):
+            if input_action_entries and answer.endswith("?") and (
+                    to_model or (resolution is not None and resolution.status == "ambiguous")):
                 _CLARIFICATIONS[input_actions] = (time.monotonic(), prompt, answer)
             if web_search_enabled and not search_fallback and (not answer or LIVE_INFO_REFUSAL_PATTERN.search(answer)):
                 try:
@@ -582,7 +632,7 @@ def chat(
                         report_status(tr("Web search: {query}{ellipsis}", query=query_preview,
                                          ellipsis="…" if len(query) > 60 else "")
                                       if query_preview else tr("Web search in progress …"))
-                    result = _execute_tool(call, enabled_tool_names, input_action_entries, search=search,
+                    result = _execute_tool(call, enabled_tool_names, allowed_entries, search=search,
                                            reply_language=reply_language)
                 executed += 1
             if cancelled():

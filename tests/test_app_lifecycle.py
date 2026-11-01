@@ -18,10 +18,46 @@ from voxcomm.app import (
     SPEAKING_STATUS, TRANSCRIPT_MAX_HEIGHT, TYPE_INTERVAL_MS,
     HotkeyField, Overlay,
     SettingsDialog,
-    configure_application, prefer_x11_on_wayland, transcript_segments,
+    configure_application, game_event_reply, game_reply_action, prefer_x11_on_wayland, transcript_segments,
 )
-from voxcomm.config import AppConfig
+from voxcomm.config import AppConfig, reply_override_key
+from voxcomm.gamelog.facts import NAV_TARGET_SET, PILOT_TAKEN, SHIP_ENTERED
 from voxcomm.theme import rgba, system_accent, system_surface
+
+
+class GameLogReplyTests(unittest.TestCase):
+    def test_game_status_list_includes_version_and_build(self):
+        from voxcomm.app import _game_status_lines
+        from voxcomm.gamelog.facts import GameFacts
+
+        lines = _game_status_lines(GameFacts(game_version="4.10.2", game_build="12881860"))
+
+        self.assertTrue(any(line.endswith(": 4.10.2") for line in lines))
+        self.assertTrue(any(line.endswith(": 12881860") for line in lines))
+
+    def test_default_reply_is_used_without_override(self):
+        self.assertEqual(game_event_reply({}, NAV_TARGET_SET, "__global__", "DE"), "Captain, Navziel ausgewählt.")
+        self.assertEqual(game_event_reply({}, NAV_TARGET_SET, "__global__", "EN"), "Captain, nav target selected.")
+
+    def test_pilot_seat_confirmation_uses_ship_name_or_mobiglas_fallback(self):
+        self.assertEqual(
+            game_event_reply({}, PILOT_TAKEN, "__global__", "EN", "Crusader C1 Spirit"),
+            "Connection to Crusader C1 Spirit successful, Captain.",
+        )
+        self.assertEqual(
+            game_event_reply({}, PILOT_TAKEN, "__global__", "DE"),
+            "Verbindung zu deinem Schiff erfolgreich, Captain.",
+        )
+        self.assertEqual(
+            game_event_reply({}, SHIP_ENTERED, "__global__", "EN"),
+            "Ship detected via Mobiglas, Captain.",
+        )
+
+    def test_override_applies_only_to_its_profile_and_language(self):
+        overrides = {reply_override_key("Star Citizen", game_reply_action(NAV_TARGET_SET), "EN"): "Route set."}
+        self.assertEqual(game_event_reply(overrides, NAV_TARGET_SET, "Star Citizen", "EN"), "Route set.")
+        self.assertEqual(game_event_reply(overrides, NAV_TARGET_SET, "Star Citizen", "DE"), "Captain, Navziel ausgewählt.")
+        self.assertEqual(game_event_reply(overrides, NAV_TARGET_SET, "__global__", "EN"), "Captain, nav target selected.")
 
 
 class ApplicationLifecycleTests(unittest.TestCase):
@@ -35,7 +71,6 @@ class ApplicationLifecycleTests(unittest.TestCase):
     def test_settings_refresh_rows_have_spacing_and_numeric_controls_are_compact(self):
         dialog = SettingsDialog(AppConfig())
 
-        self.assertEqual(dialog._model_row.spacing(), 10)
         self.assertEqual(dialog.profile_model_refresh.width(), 33)
         self.assertEqual(dialog.profile_voice_refresh.width(), 33)
         self.assertEqual(dialog.sample_rate.height(), 30)
@@ -289,8 +324,8 @@ class ApplicationLifecycleTests(unittest.TestCase):
         app = QApplication.instance() or QApplication([])
         config = AppConfig(ptt_key="F9", special_prompts={"Star Citizen": "a", "Elite": "b"},
                    special_hotkeys={"Elite": "f11", "Gone": "f12"},
-                   llm_model_overrides={"Star Citizen": "ship-model"},
-                   tts_voice_overrides={"Star Citizen": "ship-voice"})
+                   profile_models={"Star Citizen": "ship-model"},
+                   profile_voices={"Star Citizen": "ship-voice"})
         dialog = SettingsDialog(config)
 
         self.assertFalse(dialog.profile_hotkey.isEnabled())
@@ -315,15 +350,15 @@ class ApplicationLifecycleTests(unittest.TestCase):
             dialog._rename_special_profile()
         self.assertEqual(dialog.special_hotkeys["SC"], "f10")
         self.assertNotIn("Star Citizen", dialog.special_hotkeys)
-        self.assertEqual(dialog._model_overrides["SC"], "ship-model")
-        self.assertEqual(dialog._voice_overrides["SC"], "ship-voice")
+        self.assertEqual(dialog._profile_models["SC"], "ship-model")
+        self.assertEqual(dialog._profile_voices["SC"], "ship-voice")
         self.assertEqual(dialog.profile_hotkey.value(), "f10")
 
         with patch("voxcomm.app.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
             dialog._remove_special_profile()
         self.assertNotIn("SC", dialog.special_hotkeys)
-        self.assertNotIn("SC", dialog._model_overrides)
-        self.assertNotIn("SC", dialog._voice_overrides)
+        self.assertNotIn("SC", dialog._profile_models)
+        self.assertNotIn("SC", dialog._profile_voices)
 
         dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Elite"))
         dialog.profile_hotkey.clear_button.click()
@@ -342,11 +377,10 @@ class ApplicationLifecycleTests(unittest.TestCase):
         config = AppConfig(
             special_prompts={"Star Citizen": "Ship context"},
             special_hotkeys={"Star Citizen": "f10"},
-            llm_model="global-model",
-            llm_model_overrides={"Star Citizen": "ship-model"},
-            tts_voice="global-voice",
-            tts_voice_overrides={"Star Citizen": "de_DE-ship"},
-            llm_thinking_overrides={"Star Citizen": "high"},
+            profile_models={"__global__": "global-model", "Star Citizen": "ship-model"},
+            profile_voices={"__global__": "global-voice", "Star Citizen": "de_DE-ship"},
+            profile_thinking={"Star Citizen": "high"},
+            profile_response_languages={"Star Citizen": "German"},
             active_special_prompt="Star Citizen",
             enabled_tools={"__global__": ["web_search"]},
         )
@@ -837,10 +871,10 @@ class ApplicationLifecycleTests(unittest.TestCase):
         titles = [label.text() for label in dialog.findChildren(QLabel, "sectionTitle")]
         self.assertEqual(
             sorted(titles),
-            sorted(["INPUT", "SPEECH RECOGNITION", "LANGUAGE MODEL", "SPEECH OUTPUT", "PROMPT", "VOXCOMM CONTROLLER"]),
+            sorted(["INPUT", "SPEECH RECOGNITION", "LANGUAGE MODEL", "SPEECH OUTPUT", "PROMPT", "STAR CITIZEN LOG", "VOXCOMM CONTROLLER"]),
         )
         sections = dialog.findChildren(QFrame, "section")
-        self.assertEqual(len(sections), 6)
+        self.assertEqual(len(sections), 7)
         self.assertEqual(dialog.input_action_catalog.toPlainText(), "")
         self.assertTrue(dialog.action_catalog_section.isHidden())
         self.assertIn(system_accent().name(), dialog.styleSheet())
@@ -916,7 +950,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
         app = QApplication.instance() or QApplication([])
         dialog = SettingsDialog(AppConfig())
 
-        for button in (dialog.profile_voice_refresh, dialog.profile_model_refresh, dialog.model_refresh):
+        for button in (dialog.profile_voice_refresh, dialog.profile_model_refresh):
             self.assertIsInstance(button, QToolButton)
             self.assertFalse(button.icon().isNull())
             self.assertEqual(button.text(), "")
@@ -1041,31 +1075,32 @@ class ApplicationLifecycleTests(unittest.TestCase):
             ),
         })
 
-    def test_thinking_override_is_saved_per_prompt_profile(self):
+    def test_reasoning_mode_is_saved_directly_per_profile(self):
         app = QApplication.instance() or QApplication([])
         dialog = SettingsDialog(AppConfig(
             special_prompts={"Star Citizen": "Ship context"},
-            llm_thinking="medium",
+            profile_thinking={"__global__": "medium"},
         ))
         dialog._apply_thinking_options(dialog._thinking_token, ["low", "medium", "high"])
         dialog.profile_thinking.setCurrentIndex(dialog.profile_thinking.findData("low"))
         dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Star Citizen"))
         dialog.profile_thinking.setCurrentIndex(dialog.profile_thinking.findData("high"))
 
-        updated = dialog.apply(AppConfig(special_prompts={"Star Citizen": "Ship context"}, llm_thinking="medium"))
+        updated = dialog.apply(AppConfig(special_prompts={"Star Citizen": "Ship context"},
+                         profile_thinking={"__global__": "medium"}))
 
-        self.assertEqual(updated.llm_thinking_overrides, {"__global__": "low", "Star Citizen": "high"})
+        self.assertEqual(updated.profile_thinking, {"__global__": "low", "Star Citizen": "high"})
         dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("__global__"))
         self.assertEqual(dialog.profile_thinking.currentData(), "low")
 
-    def test_model_and_voice_overrides_are_saved_per_prompt_profile(self):
+    def test_model_and_voice_are_independent_direct_profile_settings(self):
         app = QApplication.instance() or QApplication([])
         dialog = SettingsDialog(AppConfig(
-            llm_model="global-model",
-            tts_voice="global-voice",
+            profile_models={"__global__": "global-model"},
+            profile_voices={"__global__": "global-voice"},
             special_prompts={"Star Citizen": "Ship context", "Work": "Work context"},
         ))
-        self.assertFalse(dialog.profile_model.isEnabled())
+        self.assertTrue(dialog.profile_model.isEnabled())
         self.assertTrue(dialog.profile_voice.isEnabled())
         self.assertEqual(dialog.profile_voice.currentText(), "global-voice")
         dialog.profile_voice.setCurrentText("de_DE-global")
@@ -1079,24 +1114,28 @@ class ApplicationLifecycleTests(unittest.TestCase):
         self.assertEqual(dialog.profile_model.currentText(), "")
         self.assertEqual(dialog.profile_voice.currentText(), "")
         dialog.profile_model.setCurrentText("llama3.2")
+        dialog.profile_response_language.setCurrentIndex(dialog.profile_response_language.findData("English"))
         updated = dialog.apply(AppConfig(
-            llm_model="global-model",
-            tts_voice="global-voice",
+            profile_models={"__global__": "global-model"},
+            profile_voices={"__global__": "global-voice"},
             special_prompts={"Star Citizen": "Ship context", "Work": "Work context"},
         ))
 
-        self.assertEqual(updated.tts_voice, "de_DE-global")
-        self.assertEqual(updated.llm_model_overrides, {
+        self.assertEqual(updated.profile_models, {
+            "__global__": "global-model",
             "Star Citizen": "qwen3:8b",
             "Work": "llama3.2",
         })
-        self.assertEqual(updated.tts_voice_overrides, {
+        self.assertEqual(updated.profile_voices, {
+            "__global__": "de_DE-global",
             "Star Citizen": "de_DE-thorsten-high",
         })
+        self.assertEqual(updated.profile_response_languages, {"Work": "English"})
 
-    def test_profile_voice_override_is_used_for_speech_output(self):
+    def test_profile_voice_is_used_for_speech_output_without_global_fallback(self):
         app = QApplication.instance() or QApplication([])
-        with patch("voxcomm.app.load_config", return_value=AppConfig(tts_voice="global-voice")):
+        with patch("voxcomm.app.load_config", return_value=AppConfig(
+                profile_voices={"__global__": "global-voice"})):
             with patch("voxcomm.app.PttListener"):
                 overlay = Overlay()
                 with patch("voxcomm.app.speak_stream_sync", return_value=[b"audio"]) as speak:
@@ -1131,11 +1170,11 @@ class ProviderSelectionTests(unittest.TestCase):
             patch("voxcomm.app.cloud.cached_models", return_value=(["m1", "m2"], time.time())),
             patch("voxcomm.app.cloud.list_cloud_models") as listing,
         ):
-            dialog = SettingsDialog(AppConfig(llm_provider="ollama-cloud", llm_model="m2"))
+            dialog = SettingsDialog(AppConfig(llm_provider="ollama-cloud", profile_models={"__global__": "m2"}))
 
         listing.assert_not_called()
-        self.assertEqual([dialog.model.itemText(index) for index in range(dialog.model.count())], ["m1", "m2"])
-        self.assertEqual(dialog.model.currentText(), "m2")
+        self.assertEqual([dialog.profile_model.itemText(index) for index in range(dialog.profile_model.count())], ["m1", "m2"])
+        self.assertEqual(dialog.profile_model.currentText(), "m2")
         self.assertIn("cache", dialog.discovery_status.text())
 
     def test_stale_cloud_cache_triggers_refresh(self):
@@ -1151,7 +1190,7 @@ class ProviderSelectionTests(unittest.TestCase):
 
     def test_apply_carries_new_provider_and_key_fields(self):
         app = QApplication.instance() or QApplication([])
-        dialog = SettingsDialog(AppConfig(tts_voice="de_DE-thorsten-low"))
+        dialog = SettingsDialog(AppConfig(profile_voices={"__global__": "de_DE-thorsten-low"}))
         dialog.stt_provider.setCurrentIndex(dialog.stt_provider.findData("whisper.cpp"))
         dialog.tts_provider.setCurrentIndex(dialog.tts_provider.findData("openai"))
         dialog.tts_language.setCurrentIndex(dialog.tts_language.findData("English"))
@@ -1166,7 +1205,7 @@ class ProviderSelectionTests(unittest.TestCase):
         self.assertEqual(updated.tts_language, "English")
         self.assertEqual(updated.ollama_api_key, "secret")
         self.assertEqual(updated.llm_provider, "ollama-cloud")
-        self.assertEqual(updated.response_language, "English")
+        self.assertEqual(dialog.response_language.text(), "English")
 
     def test_openai_interface_hides_voice_language_and_swaps_url(self):
         app = QApplication.instance() or QApplication([])
@@ -1181,6 +1220,21 @@ class ProviderSelectionTests(unittest.TestCase):
 
         self.assertEqual(dialog.tts.text(), "tcp://127.0.0.1:10200")
         self.assertTrue(dialog.tts_section.form.isRowVisible(dialog.voice_language))
+
+    def test_profile_response_language_does_not_fall_back_to_global_tts_language(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig(
+            tts_provider="openai",
+            tts_language="German",
+            profile_voices={"__global__": "data"},
+        ))
+
+        self.assertEqual(dialog.response_language.text(), "English")
+        dialog.profile_response_language.setCurrentIndex(
+            dialog.profile_response_language.findData("French"))
+        self.assertEqual(dialog.response_language.text(), "French")
+
+        dialog.deleteLater()
 
     def test_stt_interface_url_default_swap(self):
         app = QApplication.instance() or QApplication([])
@@ -1240,7 +1294,7 @@ class ProviderSelectionTests(unittest.TestCase):
         app = QApplication.instance() or QApplication([])
         config = AppConfig(stt_provider="whisper.cpp", tts_provider="openai",
                            stt_url="http://127.0.0.1:8081", tts_url="http://127.0.0.1:8097",
-                           tts_voice="data", tts_language="German", sample_rate=16000)
+                           profile_voices={"__global__": "data"}, tts_language="German", sample_rate=16000)
         with patch("voxcomm.app.load_config", return_value=config), patch("voxcomm.app.PttListener"):
             overlay = Overlay()
             with (
@@ -1270,8 +1324,9 @@ class ProviderSelectionTests(unittest.TestCase):
     def test_cloud_key_is_passed_to_chat_and_voice_is_not_a_language(self):
         app = QApplication.instance() or QApplication([])
         config = AppConfig(llm_provider="ollama-cloud", llm_url="https://ollama.com",
-                           ollama_api_key="secret", tts_provider="openai", tts_voice="data",
-                           response_language="Deutsch")
+                           ollama_api_key="secret", tts_provider="openai",
+                           profile_voices={"__global__": "data"},
+                           profile_response_languages={"__global__": "Deutsch"})
         with patch("voxcomm.app.load_config", return_value=config), patch("voxcomm.app.PttListener"):
             overlay = Overlay()
             requests = []
@@ -1291,7 +1346,7 @@ class ProviderSelectionTests(unittest.TestCase):
 
     def test_thinking_setting_is_passed_to_chat(self):
         app = QApplication.instance() or QApplication([])
-        config = AppConfig(llm_thinking="off")
+        config = AppConfig(profile_thinking={"__global__": "off"})
         with patch("voxcomm.app.load_config", return_value=config), patch("voxcomm.app.PttListener"):
             overlay = Overlay()
             with (
@@ -1308,43 +1363,45 @@ class ProviderSelectionTests(unittest.TestCase):
 
     def test_thinking_choices_follow_the_models_reported_controls(self):
         app = QApplication.instance() or QApplication([])
-        dialog = SettingsDialog(AppConfig(llm_model="gemma4", llm_thinking="off"))
+        dialog = SettingsDialog(AppConfig(profile_models={"__global__": "gemma4"},
+                          profile_thinking={"__global__": "off"}))
 
-        self.assertEqual(dialog.thinking.currentData(), "off")
-        self.assertEqual(dialog.thinking.currentText(), "Off")
+        self.assertEqual(dialog.profile_thinking.currentData(), "off")
+        self.assertEqual(dialog.profile_thinking.currentText(), "Off")
         dialog._apply_thinking_options(dialog._thinking_token, ["off", "on"])
-        self.assertEqual([dialog.thinking.itemText(i) for i in range(dialog.thinking.count())],
+        self.assertEqual([dialog.profile_thinking.itemText(i) for i in range(dialog.profile_thinking.count())],
                          ["Model default", "Off", "On"])
-        self.assertEqual(dialog.thinking.currentData(), "off")
+        self.assertEqual(dialog.profile_thinking.currentData(), "off")
 
         dialog._apply_thinking_options(dialog._thinking_token, ["low", "medium", "high"])
-        self.assertEqual([dialog.thinking.itemData(i) for i in range(dialog.thinking.count())],
+        self.assertEqual([dialog.profile_thinking.itemData(i) for i in range(dialog.profile_thinking.count())],
                          ["", "low", "medium", "high"])
-        self.assertEqual(dialog.thinking.currentData(), "")
-        self.assertEqual(dialog.apply(AppConfig()).llm_thinking, "off")
+        self.assertEqual(dialog.profile_thinking.currentData(), "")
+        self.assertEqual(dialog.apply(AppConfig()).profile_thinking, {"__global__": "off"})
 
-        dialog.thinking.setCurrentIndex(dialog.thinking.findData("high"))
-        dialog.thinking.activated.emit(dialog.thinking.currentIndex())
-        self.assertEqual(dialog.apply(AppConfig()).llm_thinking, "high")
+        dialog.profile_thinking.setCurrentIndex(dialog.profile_thinking.findData("high"))
+        dialog.profile_thinking.activated.emit(dialog.profile_thinking.currentIndex())
+        self.assertEqual(dialog.apply(AppConfig()).profile_thinking, {"__global__": "high"})
         dialog.deleteLater()
 
     def test_model_without_thinking_controls_disables_the_choice_but_keeps_the_setting(self):
         app = QApplication.instance() or QApplication([])
-        dialog = SettingsDialog(AppConfig(llm_model="deepseek-v2", llm_thinking="high"))
+        dialog = SettingsDialog(AppConfig(profile_models={"__global__": "deepseek-v2"},
+                          profile_thinking={"__global__": "high"}))
 
         dialog._apply_thinking_options(dialog._thinking_token, [])
 
-        self.assertFalse(dialog.thinking.isEnabled())
-        self.assertEqual(dialog.thinking.currentText(), "Not controlled by model")
-        self.assertEqual(dialog.apply(AppConfig()).llm_thinking, "high")
+        self.assertFalse(dialog.profile_thinking.isEnabled())
+        self.assertEqual(dialog.profile_thinking.currentText(), "Not controlled by model")
+        self.assertEqual(dialog.apply(AppConfig()).profile_thinking, {"__global__": "high"})
         dialog._apply_thinking_options(dialog._thinking_token, ["low", "medium", "high"])
-        self.assertTrue(dialog.thinking.isEnabled())
-        self.assertEqual(dialog.thinking.currentData(), "high")
+        self.assertTrue(dialog.profile_thinking.isEnabled())
+        self.assertEqual(dialog.profile_thinking.currentData(), "high")
         dialog.deleteLater()
 
     def test_stale_thinking_answer_for_a_previous_model_is_ignored(self):
         app = QApplication.instance() or QApplication([])
-        dialog = SettingsDialog(AppConfig(llm_model="a"))
+        dialog = SettingsDialog(AppConfig(profile_models={"__global__": "a"}))
         with patch("voxcomm.app.threading.Thread"):
             dialog._lookup_thinking()
             stale = dialog._thinking_token
@@ -1352,14 +1409,15 @@ class ProviderSelectionTests(unittest.TestCase):
 
         dialog._apply_thinking_options(stale, ["low", "high"])
 
-        self.assertEqual(dialog.thinking.count(), 1)
+        self.assertEqual(dialog.profile_thinking.count(), 1)
         dialog._apply_thinking_options(dialog._thinking_token, ["low", "high"])
-        self.assertEqual(dialog.thinking.count(), 3)
+        self.assertEqual(dialog.profile_thinking.count(), 3)
         dialog.deleteLater()
 
     def test_thinking_lookup_runs_off_the_ui_thread_with_current_connection_values(self):
         app = QApplication.instance() or QApplication([])
-        dialog = SettingsDialog(AppConfig(llm_provider="ollama", llm_url="http://h:11434", llm_model="gpt-oss"))
+        dialog = SettingsDialog(AppConfig(llm_provider="ollama", llm_url="http://h:11434",
+                          profile_models={"__global__": "gpt-oss"}))
         received = []
         dialog.discovery.thinking.connect(lambda token, options: received.append((token, options)))
 

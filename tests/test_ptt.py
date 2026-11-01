@@ -15,6 +15,8 @@ class BrokenKeyboardListener:
 
 
 class FakeKeyboard:
+    name = "Keychron"
+
     def __init__(self):
         self._read_end, self._write_end = os.pipe()
         self.closed = False
@@ -42,6 +44,8 @@ class FakeKeyboard:
 class PttTests(unittest.TestCase):
     def test_capture_input_reads_a_gamepad_button(self):
         class FakeDevice:
+            name = "Gamepad"
+
             def capabilities(self):
                 return {ecodes.EV_KEY: [ecodes.BTN_SOUTH]}
 
@@ -73,7 +77,7 @@ class PttTests(unittest.TestCase):
             with patch("evdev.InputDevice", return_value=device):
                 with patch("selectors.DefaultSelector", return_value=selector):
                     with patch.object(device, "fileno", return_value=1, create=True):
-                        self.assertEqual(capture_input(threading.Event()), "BTN_SOUTH")
+                        self.assertEqual(capture_input(threading.Event()), "BTN_SOUTH@Gamepad")
 
         self.assertTrue(device.closed)
 
@@ -95,7 +99,7 @@ class PttTests(unittest.TestCase):
         events = []
         listener = PttListener("f9", lambda *event: events.append(event))
         keyboard = FakeKeyboard()
-        thread = threading.Thread(target=listener._watch_inputs, args=({ecodes.KEY_F9: ""}, [keyboard]))
+        thread = threading.Thread(target=listener._watch_inputs, args=({(ecodes.KEY_F9, None): ""}, [keyboard]))
         thread.start()
         try:
             keyboard.push(ecodes.KEY_A, 1)
@@ -136,7 +140,7 @@ class PttTests(unittest.TestCase):
         listener = PttListener("F9", lambda *_args: None, {"F10": "Elite"})
         with patch("evdev.list_devices", return_value=[]):
             codes, devices = listener._open_inputs()
-        self.assertEqual(codes, {ecodes.KEY_F9: "", ecodes.KEY_F10: "Elite"})
+        self.assertEqual(codes, {(ecodes.KEY_F9, None): "", (ecodes.KEY_F10, None): "Elite"})
         self.assertEqual(devices, [])
 
         broken = PttListener("F9", lambda *_args: None, {"nope": "Elite"})
@@ -145,6 +149,8 @@ class PttTests(unittest.TestCase):
 
     def test_open_inputs_discovers_gamepad_button_devices(self):
         class FakeGamepad:
+            name = "Real Gamepad"
+
             def capabilities(self):
                 return {ecodes.EV_KEY: [ecodes.BTN_SOUTH]}
 
@@ -157,8 +163,50 @@ class PttTests(unittest.TestCase):
             with patch("evdev.InputDevice", return_value=gamepad):
                 codes, devices = listener._open_inputs()
 
-        self.assertEqual(codes, {ecodes.BTN_SOUTH: ""})
+        self.assertEqual(codes, {(ecodes.BTN_SOUTH, None): ""})
         self.assertEqual(devices, [gamepad])
+
+    def test_open_inputs_skips_voxcomm_virtual_gamepad(self):
+        class FakeVirtualGamepad:
+            name = "VoxComm"
+
+            def capabilities(self):
+                return {ecodes.EV_KEY: [ecodes.BTN_TRIGGER]}
+
+            def close(self):
+                self.closed = True
+
+        virtual = FakeVirtualGamepad()
+        listener = PttListener("btn_trigger", lambda *_args: None)
+        with patch("evdev.list_devices", return_value=["/dev/input/event-virtual"]):
+            with patch("evdev.InputDevice", return_value=virtual):
+                codes, devices = listener._open_inputs()
+
+        self.assertEqual(devices, [])
+        self.assertTrue(virtual.closed)
+
+    def test_open_inputs_binds_button_to_its_device_only(self):
+        class FakeStick:
+            name = "X-55 Stick"
+
+            def capabilities(self):
+                return {ecodes.EV_KEY: [ecodes.BTN_TRIGGER]}
+
+            def close(self):
+                self.closed = True
+
+        class FakeThrottle(FakeStick):
+            name = "X-55 Throttle"
+
+        stick, throttle = FakeStick(), FakeThrottle()
+        listener = PttListener("BTN_TRIGGER@X-55 Throttle", lambda *_args: None)
+        with patch("evdev.list_devices", return_value=["/dev/input/stick", "/dev/input/throttle"]):
+            with patch("evdev.InputDevice", side_effect=[stick, throttle]):
+                codes, devices = listener._open_inputs()
+
+        self.assertEqual(codes, {(ecodes.BTN_TRIGGER, "x-55 throttle"): ""})
+        self.assertEqual(devices, [throttle])
+        self.assertTrue(stick.closed)
 
     def test_start_reports_missing_input_access_instead_of_failing(self):
         events = []

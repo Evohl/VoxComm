@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
+import shutil
 from datetime import datetime
+from pathlib import Path
 
 from voxcomm.config import DEFAULT_GLOBAL_PROMPT
 
@@ -34,12 +37,31 @@ VOICE_OUTPUT_RULES = (
     "Namen der Quelle."
 )
 
+def persona_path() -> Path:
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return config_home / "voxcomm" / "persona.txt"
+
+
+def load_persona(path: Path | None = None) -> str:
+    target = path or persona_path()
+    template = Path(__file__).with_name("persona.txt")
+    if not target.exists():
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(template, target)
+        except OSError:
+            return template.read_text(encoding="utf-8").strip()
+    try:
+        return target.read_text(encoding="utf-8").strip()
+    except OSError:
+        return template.read_text(encoding="utf-8").strip()
+
 
 def response_language_for_voice(voice_name: str, fallback: str = "Deutsch") -> str:
     if not voice_name:
         return fallback.strip() or "Deutsch"
     language_code = voice_name.split("-", 1)[0].split("_", 1)[0].lower()
-    return VOICE_LANGUAGE_NAMES.get(language_code, language_code.upper())
+    return VOICE_LANGUAGE_NAMES.get(language_code, fallback.strip() or "Deutsch")
 
 
 def build_system_prompt(
@@ -49,18 +71,29 @@ def build_system_prompt(
     fallback_language: str = "Deutsch",
     current_time: datetime | None = None,
     global_prompt: str = DEFAULT_GLOBAL_PROMPT,
+    extra_context: str = "",
+    response_language: str = "",
+    persona: str | None = None,
 ) -> str:
     now = current_time or datetime.now().astimezone()
     timestamp = now.astimezone().isoformat(timespec="seconds") if now.tzinfo else now.isoformat(timespec="seconds")
-    response_language = response_language_for_voice(piper_voice, fallback_language)
+    response_language = response_language.strip() or response_language_for_voice(piper_voice, fallback_language)
     sections = [
-        global_prompt.strip(),
+        global_prompt.strip() if not special_prompt_name.strip() else "",
         f"Lokale aktuelle Zeit: {timestamp}. Dieser Zeitstempel ist maßgeblich; leite relative Zeitangaben wie gestern, heute und morgen daraus ab.",
-        f"Antworte immer in der Sprache {response_language}; diese Sprache ist aus der ausgewählten Piper-Stimme abgeleitet.",
         VOICE_OUTPUT_RULES,
     ]
     extra = special_prompt.strip()
     if extra:
         heading = f"Spezialprofil: {special_prompt_name.strip()}" if special_prompt_name.strip() else "Spezialprofil"
         sections.extend([heading, extra])
+    if extra_context.strip():
+        sections.append(extra_context.strip())
+    persona_text = load_persona() if persona is None else persona.strip()
+    if persona_text:
+        sections.append(persona_text)
+    sections.append(
+        f"VERBINDLICHE ANTWORTSPRACHE: {response_language}. Verfasse deine gesamte Antwort in dieser Sprache, "
+        "unabhängig von der Sprache der Anfrage, des Profils oder des Kontexts. Wechsle nicht die Sprache."
+    )
     return "\n\n".join(sections)

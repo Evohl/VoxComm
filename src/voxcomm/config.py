@@ -20,30 +20,55 @@ class AppConfig:
     tts_url: str = "tcp://127.0.0.1:10200"
     tts_provider: str = "wyoming"
     tts_language: str = ""
-    tts_voice: str = ""
     auto_speak: bool = False
     global_prompt: str = DEFAULT_GLOBAL_PROMPT
     voice_language: str = ""
-    response_language: str = "Deutsch"
     special_prompts: dict[str, str] = field(default_factory=dict)
+    profile_models: dict[str, str] = field(default_factory=dict)
+    profile_voices: dict[str, str] = field(default_factory=dict)
+    profile_thinking: dict[str, str] = field(default_factory=dict)
+    profile_response_languages: dict[str, str] = field(default_factory=dict)
     special_hotkeys: dict[str, str] = field(default_factory=dict)
     enabled_tools: dict[str, list[str]] = field(default_factory=dict)
     input_action_catalogs: dict[str, str] = field(default_factory=dict)
+    input_reply_overrides: dict[str, str] = field(default_factory=dict)
+    controller_mode: str = "hybrid"
+    controller_llm_keyword: str = "assistent"
     active_special_prompt: str = ""
     llm_provider: str = "ollama"
     llm_url: str = "http://127.0.0.1:11434"
-    llm_model: str = ""
-    llm_model_overrides: dict[str, str] = field(default_factory=dict)
-    llm_thinking: str = ""
-    llm_thinking_overrides: dict[str, str] = field(default_factory=dict)
-    tts_voice_overrides: dict[str, str] = field(default_factory=dict)
     ollama_api_key: str = ""
     ptt_key: str = "F9"
     sample_rate: int = 16000
     tray_mode: bool = False
+    game_announce_ship_entered: bool = True
+    game_announce_ship_left: bool = True
+    game_announce_pilot_taken: bool = True
+    game_announce_pilot_left: bool = True
+    game_announce_nav_target_set: bool = True
+    game_announce_quantum_arrived: bool = True
     overlay_hide_seconds: int = 10
     overlay_x: int | None = None
     overlay_y: int | None = None
+
+
+def reply_override_key(profile: str, action: str, tag: str) -> str:
+    return f"{profile}\t{action}\t{tag}"
+
+
+def split_reply_override_key(key: str) -> tuple[str, str, str]:
+    profile, rest = key.split("\t", 1)
+    action, tag = rest.rsplit("\t", 1)
+    return profile, action, tag
+
+
+def reply_overrides_for_profile(overrides: dict[str, str], profile: str) -> dict[tuple[str, str], str]:
+    result = {}
+    for key, text in overrides.items():
+        owner, action, tag = split_reply_override_key(key)
+        if owner == profile:
+            result[(action, tag)] = text
+    return result
 
 
 def config_path() -> Path:
@@ -68,6 +93,26 @@ def load_config(path: Path | None = None) -> AppConfig:
         return AppConfig()
     with target.open("rb") as config_file:
         raw = tomllib.load(config_file)
+    for settings_name, legacy_field, legacy_table in (
+        ("profile_models", "llm_model", "llm_model_overrides"),
+        ("profile_voices", "tts_voice", "tts_voice_overrides"),
+        ("profile_thinking", "llm_thinking", "llm_thinking_overrides"),
+    ):
+        settings = dict(raw.get(settings_name, {}))
+        legacy_value = raw.pop(legacy_field, "")
+        legacy_profiles = raw.pop(legacy_table, {})
+        for profile, value in legacy_profiles.items():
+            settings.setdefault(profile, value)
+        if legacy_value:
+            settings.setdefault("__global__", legacy_value)
+        if settings:
+            raw[settings_name] = settings
+    response_languages = dict(raw.get("profile_response_languages", {}))
+    legacy_response_language = raw.pop("response_language", "")
+    if legacy_response_language:
+        response_languages.setdefault("__global__", legacy_response_language)
+    if response_languages:
+        raw["profile_response_languages"] = response_languages
     if "special_prompts" not in raw and raw.get("additional_prompt", "").strip():
         raw["special_prompts"] = {"Spezialaufgabe": raw["additional_prompt"]}
         raw["active_special_prompt"] = "Spezialaufgabe"
@@ -85,17 +130,15 @@ def save_config(config: AppConfig, path: Path | None = None) -> None:
     hotkeys = values.pop("special_hotkeys")
     enabled_tools = values.pop("enabled_tools")
     input_action_catalogs = values.pop("input_action_catalogs")
-    model_overrides = values.pop("llm_model_overrides")
-    thinking_overrides = values.pop("llm_thinking_overrides")
-    voice_overrides = values.pop("tts_voice_overrides")
+    reply_overrides = values.pop("input_reply_overrides")
+    profile_tables = tuple((name, values.pop(name)) for name in (
+        "profile_models", "profile_voices", "profile_thinking", "profile_response_languages"))
     rows = [f"{key} = {json.dumps(value, ensure_ascii=True)}" if isinstance(value, str)
             else f"{key} = {str(value).lower() if isinstance(value, bool) else value}"
             for key, value in values.items() if value is not None]
     for table, entries in (("special_prompts", prompts), ("special_hotkeys", hotkeys),
                            ("enabled_tools", enabled_tools), ("input_action_catalogs", input_action_catalogs),
-                           ("llm_model_overrides", model_overrides),
-                           ("llm_thinking_overrides", thinking_overrides),
-                           ("tts_voice_overrides", voice_overrides)):
+                           ("input_reply_overrides", reply_overrides), *profile_tables):
         if entries:
             rows.extend(["", f"[{table}]"])
             rows.extend(f"{json.dumps(name, ensure_ascii=True)} = {json.dumps(value, ensure_ascii=True)}"

@@ -446,6 +446,187 @@ class ModelDiscoveryTests(unittest.TestCase):
         press.assert_not_called()
         request.assert_called_once()
 
+    @patch("voxcomm.providers.llm.press_gamepad_button", return_value="Button1")
+    @patch("voxcomm.providers.llm._request")
+    def test_script_mode_presses_exact_match_without_model(self, request, press):
+        answer = chat(
+            "ollama", "http://localhost:11434", "model", "flight ready",
+            enabled_tools=["input_control"], controller_mode="script",
+            input_actions="Flight Systems On => flight ready => Button1 => {EN} enabled",
+        )
+
+        self.assertEqual(answer, "enabled")
+        press.assert_called_once_with("Button1", hold=False)
+        request.assert_not_called()
+
+    @patch("voxcomm.providers.llm.press_gamepad_button")
+    @patch("voxcomm.providers.llm._request")
+    def test_script_mode_rejects_unmatched_request_without_model(self, request, press):
+        answer = chat(
+            "ollama", "http://localhost:11434", "model", "Dance a jig",
+            enabled_tools=["input_control"], controller_mode="script",
+            input_actions="Flight Systems On => flight ready => Button1 => {EN} enabled",
+        )
+
+        self.assertEqual(answer, "Captain, command not recognized. Please repeat the command.")
+        press.assert_not_called()
+        request.assert_not_called()
+
+    @patch("voxcomm.providers.llm.press_gamepad_button")
+    @patch("voxcomm.providers.llm._request")
+    def test_script_mode_blocks_action_whose_precondition_is_contradicted(self, request, press):
+        catalog = (
+            "[pilot seat yes]\n"
+            "Quantum Operator Mode => operator mode + quantum => Button5 hold => {EN} Quantum mode selected."
+        )
+
+        answer = chat(
+            "ollama", "http://localhost:11434", "model", "operator mode quantum",
+            enabled_tools=["input_control"], controller_mode="script", input_actions=catalog,
+            game_state={"in_ship": True, "pilot_seat": False},
+        )
+
+        self.assertEqual(
+            answer,
+            "Captain, ship controls are unavailable until you take the pilot seat.",
+        )
+        press.assert_not_called()
+        request.assert_not_called()
+
+    @patch("voxcomm.providers.llm.press_gamepad_button", return_value="Button5")
+    @patch("voxcomm.providers.llm._request")
+    def test_script_mode_allows_action_when_precondition_holds(self, request, press):
+        catalog = (
+            "[pilot seat yes]\n"
+            "Quantum Operator Mode => operator mode + quantum => Button5 hold => {EN} Quantum mode selected."
+        )
+
+        chat(
+            "ollama", "http://localhost:11434", "model", "operator mode quantum",
+            enabled_tools=["input_control"], controller_mode="script", input_actions=catalog,
+            game_state={"pilot_seat": True},
+        )
+
+        self.assertEqual(press.call_count, 1)
+        press.assert_called_with("Button5", hold=True)
+        request.assert_not_called()
+
+    @patch("voxcomm.providers.llm.press_gamepad_button")
+    @patch("voxcomm.providers.llm._request")
+    def test_script_mode_blocks_action_when_precondition_is_unknown(self, request, press):
+        catalog = (
+            "[pilot seat yes]\n"
+            "Quantum Operator Mode => operator mode + quantum => Button5 hold => {EN} Quantum mode selected."
+        )
+
+        for game_state in ({"pilot_seat": None}, {}):
+            with self.subTest(game_state=game_state):
+                answer = chat(
+                    "ollama", "http://localhost:11434", "model", "operator mode quantum",
+                    enabled_tools=["input_control"], controller_mode="script", input_actions=catalog,
+                    game_state=game_state,
+                )
+                self.assertEqual(
+                    answer,
+                    "Captain, pilot-seat status is unknown. I am waiting for Star Citizen telemetry before enabling ship controls.",
+                )
+
+        press.assert_not_called()
+        request.assert_not_called()
+
+    @patch("voxcomm.providers.llm.press_gamepad_button", return_value="Button1")
+    @patch("voxcomm.providers.llm._request")
+    def test_llm_mode_tells_model_about_blocked_actions(self, request, press):
+        request.side_effect = [
+            {"tool_calls": [{"function": {"name": "input_control", "arguments": {"action": "Flight Systems On"}}}]},
+            {"content": "Flight Systeme eingeschaltet."},
+        ]
+        catalog = (
+            "Flight Systems On => flight ready => Button1 => {EN} enabled\n"
+            "[pilot seat yes]\n"
+            "Quantum Operator Mode => operator mode + quantum => Button5 hold => {EN} Quantum mode selected."
+        )
+
+        chat(
+            "ollama", "http://localhost:11434", "model", "flight ready",
+            enabled_tools=["input_control"], controller_mode="llm", input_actions=catalog,
+            game_state={"pilot_seat": None},
+        )
+
+        system_message = request.call_args_list[0].args[3][0]["content"]
+        self.assertIn(
+            "Quantum Operator Mode: Captain, pilot-seat status is unknown. I am waiting for Star Citizen telemetry before enabling ship controls.",
+            system_message,
+        )
+        press.assert_called_once_with("Button1", hold=False)
+
+    @patch("voxcomm.providers.llm.press_gamepad_button", return_value="Button1")
+    @patch("voxcomm.providers.llm._request")
+    def test_script_mode_uses_custom_reply_for_language(self, request, press):
+        catalog = "Flight Systems On => flight ready => Button1 => {DE} aktiviert. | {EN} enabled"
+
+        answer = chat(
+            "ollama", "http://localhost:11434", "model", "flight ready",
+            enabled_tools=["input_control"], controller_mode="script", input_actions=catalog,
+            reply_language="English",
+            reply_overrides={("Flight Systems On", "EN"): "Custom ready."},
+        )
+
+        self.assertEqual(answer, "Custom ready.")
+        press.assert_called_once_with("Button1", hold=False)
+        request.assert_not_called()
+
+    @patch("voxcomm.providers.llm.press_gamepad_button", return_value="Button1")
+    @patch("voxcomm.providers.llm._request")
+    def test_llm_mode_sends_exact_match_to_model(self, request, press):
+        request.side_effect = [
+            {"tool_calls": [{"function": {"name": "input_control", "arguments": {"action": "Flight Systems On"}}}]},
+            {"content": "Flight Systeme eingeschaltet."},
+        ]
+
+        answer = chat(
+            "ollama", "http://localhost:11434", "model", "flight ready",
+            enabled_tools=["input_control"], controller_mode="llm",
+            input_actions="Flight Systems On => flight ready => Button1 => {EN} enabled",
+        )
+
+        self.assertEqual(answer, "Flight Systeme eingeschaltet.")
+        self.assertEqual(request.call_count, 2)
+        press.assert_called_once_with("Button1", hold=False)
+        system_message = request.call_args_list[0].args[3][0]["content"]
+        self.assertNotIn("keyword matcher could not decide", system_message)
+
+    @patch("voxcomm.providers.llm.press_gamepad_button", return_value="Button1")
+    @patch("voxcomm.providers.llm._request")
+    def test_hybrid_without_keyword_in_prompt_presses_directly(self, request, press):
+        answer = chat(
+            "ollama", "http://localhost:11434", "model", "flight ready",
+            enabled_tools=["input_control"], controller_mode="hybrid", llm_keyword="assistent",
+            input_actions="Flight Systems On => flight ready => Button1 => {EN} enabled",
+        )
+
+        self.assertEqual(answer, "enabled")
+        press.assert_called_once_with("Button1", hold=False)
+        request.assert_not_called()
+
+    @patch("voxcomm.providers.llm.press_gamepad_button", return_value="Button1")
+    @patch("voxcomm.providers.llm._request")
+    def test_hybrid_keyword_in_prompt_sends_request_to_model(self, request, press):
+        request.side_effect = [
+            {"tool_calls": [{"function": {"name": "input_control", "arguments": {"action": "Flight Systems On"}}}]},
+            {"content": "Erledigt."},
+        ]
+
+        answer = chat(
+            "ollama", "http://localhost:11434", "model", "Assistent, flight ready",
+            enabled_tools=["input_control"], controller_mode="hybrid", llm_keyword="assistent",
+            input_actions="Flight Systems On => flight ready => Button1 => {EN} enabled",
+        )
+
+        self.assertEqual(answer, "Erledigt.")
+        self.assertEqual(request.call_count, 2)
+        press.assert_called_once_with("Button1", hold=False)
+
     @patch("voxcomm.providers.llm.press_gamepad_button")
     @patch("voxcomm.providers.llm._request", return_value={"tool_calls": [{
         "function": {"name": "input_control", "arguments": {"keys": ["X"]}},
@@ -485,7 +666,7 @@ class ModelDiscoveryTests(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(answer, "Command not recognized. Please repeat it.")
+        self.assertEqual(answer, "Captain, command not recognized. Please repeat the command.")
         press.assert_not_called()
         request.assert_not_called()
 

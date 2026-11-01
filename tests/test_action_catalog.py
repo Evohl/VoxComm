@@ -2,9 +2,12 @@ import unittest
 
 from voxcomm.action_catalog import (
     action_reply,
+    apply_reply_overrides,
+    contains_keyword,
     parse_action_catalog,
     reply_language_tag,
     resolve_utterance,
+    unmet_requirement,
 )
 
 SAMPLE = (
@@ -88,6 +91,33 @@ class ActionCatalogParseTests(unittest.TestCase):
         self.assertEqual(len(actions), 2)
 
 
+class ReplyOverrideTests(unittest.TestCase):
+    def test_custom_reply_replaces_only_matching_action_and_language(self):
+        actions = parse_action_catalog(
+            "Gear On => gear => Button1 => {DE} Fahrwerk an. | {EN} Gear on.\n"
+            "Gear Off => gear off => Button2 => {DE} Fahrwerk aus. | {EN} Gear off."
+        )
+
+        merged = apply_reply_overrides(actions, {("Gear On", "EN"): "Gear is up."})
+
+        self.assertEqual(merged[0]["replies"], {"DE": "Fahrwerk an.", "EN": "Gear is up."})
+        self.assertIs(merged[1], actions[1])
+        self.assertEqual(action_reply(merged[0], "English"), "Gear is up.")
+        self.assertEqual(action_reply(merged[0], "Deutsch"), "Fahrwerk an.")
+
+
+class ContainsKeywordTests(unittest.TestCase):
+    def test_matches_whole_words_with_inflection(self):
+        self.assertTrue(contains_keyword("Assistent, Fahrwerk ausfahren", "assistent"))
+        self.assertTrue(contains_keyword("Hey Assistenten bitte", "Assistent"))
+        self.assertFalse(contains_keyword("Fahrwerk ausfahren", "assistent"))
+        self.assertFalse(contains_keyword("Fahrwerk ausfahren", ""))
+
+    def test_multi_word_keyword_needs_contiguous_words(self):
+        self.assertTrue(contains_keyword("Hey computer, Hangar", "hey computer"))
+        self.assertFalse(contains_keyword("computer, hey Hangar", "hey computer"))
+
+
 class ActionCatalogResolveTests(unittest.TestCase):
     def setUp(self):
         self.actions = parse_action_catalog(SAMPLE)
@@ -151,6 +181,60 @@ class ActionCatalogResolveTests(unittest.TestCase):
         self.assertEqual(reply_language_tag("German"), "DE")
         self.assertEqual(reply_language_tag("english"), "EN")
         self.assertEqual(reply_language_tag("Spanish"), "")
+
+
+PRECONDITION_CATALOG = (
+    "Flight Systems On => flight ready => Button1 => {EN} enabled\n"
+    "[pilot seat yes]\n"
+    "Quantum Operator Mode => operator mode + quantum => Button5 hold => {EN} Quantum mode selected.\n"
+    "Missile Operator Mode => operator mode + missile => Button6 => {EN} Missile mode selected.\n"
+    "[]\n"
+    "Headlights On => headlights + on => Button64 => {EN} Headlights on.\n"
+)
+
+
+class ActionPreconditionTests(unittest.TestCase):
+    def test_directive_applies_to_following_rows_until_cleared(self):
+        actions = {action["name"]: action for action in parse_action_catalog(PRECONDITION_CATALOG)}
+
+        self.assertIsNone(actions["Flight Systems On"]["requires"])
+        self.assertEqual(actions["Quantum Operator Mode"]["requires"], ("pilot_seat", True))
+        self.assertEqual(actions["Missile Operator Mode"]["requires"], ("pilot_seat", True))
+        self.assertIsNone(actions["Headlights On"]["requires"])
+
+    def test_german_and_no_values_are_parsed(self):
+        actions = parse_action_catalog(
+            "[pilotensitz nein]\nFire => fire => Button3 => {EN} Fire\n"
+            "[in ship ja]\nScan => scan => Button4 => {EN} Scan\n")
+
+        self.assertEqual(actions[0]["requires"], ("pilot_seat", False))
+        self.assertEqual(actions[1]["requires"], ("in_ship", True))
+
+    def test_rejects_malformed_directives(self):
+        for line in ("[pilot seat maybe]", "[unknown yes]", "[pilot seat yes", "[yes]"):
+            with self.subTest(line=line), self.assertRaises(ValueError):
+                parse_action_catalog(f"{line}\nFire => fire => Button3 => {{EN}} Fire")
+
+    def test_unmet_requirement_blocks_unknown_and_contradictory_state(self):
+        actions = {action["name"]: action for action in parse_action_catalog(PRECONDITION_CATALOG)}
+        quantum = actions["Quantum Operator Mode"]
+
+        self.assertEqual(unmet_requirement(quantum, {"pilot_seat": False}), ("pilot_seat", True))
+        self.assertIsNone(unmet_requirement(quantum, {"pilot_seat": True}))
+        self.assertEqual(unmet_requirement(quantum, {"pilot_seat": None}), ("pilot_seat", True))
+        self.assertEqual(unmet_requirement(quantum, {}), ("pilot_seat", True))
+        self.assertIsNone(unmet_requirement(actions["Headlights On"], {"pilot_seat": False}))
+
+        scan = parse_action_catalog("[in ship yes]\nScan => scan => Button41 => {EN} Scanning")[0]
+        self.assertEqual(unmet_requirement(scan, {"in_ship": None}), ("in_ship", True))
+
+    def test_resolution_still_finds_blocked_action(self):
+        actions = parse_action_catalog(PRECONDITION_CATALOG)
+
+        resolution = resolve_utterance(actions, "operator mode quantum")
+
+        self.assertEqual(resolution.status, "match")
+        self.assertEqual(resolution.actions[0]["name"], "Quantum Operator Mode")
 
 
 if __name__ == "__main__":

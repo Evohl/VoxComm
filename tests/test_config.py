@@ -3,10 +3,23 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 
-from voxcomm.config import AppConfig, config_path, load_config, save_config, save_overlay_position
+from voxcomm.config import (
+    AppConfig, config_path, load_config, reply_override_key, reply_overrides_for_profile,
+    save_config, save_overlay_position, split_reply_override_key,
+)
 
 
 class ConfigTests(unittest.TestCase):
+    def test_reply_override_keys_round_trip_and_filter_by_profile(self):
+        key = reply_override_key("Star Citizen", "Flight Systems On", "EN")
+
+        self.assertEqual(split_reply_override_key(key), ("Star Citizen", "Flight Systems On", "EN"))
+        self.assertEqual(
+            reply_overrides_for_profile({key: "Ready.", reply_override_key("__global__", "A", "DE"): "x"},
+                                        "Star Citizen"),
+            {("Flight Systems On", "EN"): "Ready."},
+        )
+
     def test_round_trip(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
@@ -15,23 +28,27 @@ class ConfigTests(unittest.TestCase):
                 stt_language="en",
                 auto_speak=True,
                 global_prompt="Custom global prompt",
-                llm_model="qwen2.5",
+                profile_models={"__global__": "qwen2.5", "Star Citizen": "qwen3:8b"},
+                profile_voices={"__global__": "en_US-amy-medium", "Star Citizen": "de_DE-thorsten-high"},
+                profile_thinking={"__global__": "low", "Star Citizen": "high"},
+                profile_response_languages={"__global__": "English", "Star Citizen": "German"},
                 ptt_key="F10",
                 tray_mode=True,
+                game_announce_ship_entered=False,
+                game_announce_pilot_left=False,
                 overlay_x=-150,
                 overlay_y=250,
                 voice_language="de",
-                response_language="English",
                 special_prompts={"Star Citizen": "Flight context\nNever assume a ship is owned."},
                 special_hotkeys={"Star Citizen": "f10"},
                 enabled_tools={"__global__": ["web_search"], "Star Citizen": ["web_search", "input_control"]},
                 input_action_catalogs={
                     "Star Citizen": "flight ready|systeme bereit => RIGHTALT + R => Flight ready",
                 },
+                input_reply_overrides={reply_override_key("Star Citizen", "Flight ready", "DE"): "Fahrwerk bereit."},
+                controller_mode="script",
+                controller_llm_keyword="assistent",
                 active_special_prompt="Star Citizen",
-                llm_model_overrides={"Star Citizen": "qwen3:8b"},
-                llm_thinking_overrides={"__global__": "low", "Star Citizen": "high"},
-                tts_voice_overrides={"Star Citizen": "de_DE-thorsten-high"},
             )
             save_config(original, path)
             self.assertEqual(load_config(path), original)
@@ -104,12 +121,25 @@ class ConfigTests(unittest.TestCase):
             root = Path(directory)
             legacy = root / "sc-ai-copilot" / "config.toml"
             legacy.parent.mkdir()
-            legacy.write_text('llm_model = "local-model"\n', encoding="utf-8")
+            legacy.write_text(
+                'llm_model = "local-model"\n'
+                'tts_voice = "en_US-amy-medium"\n'
+                'llm_thinking = "low"\n'
+                'response_language = "English"\n'
+                '\n[llm_model_overrides]\n"Pilot" = "pilot-model"\n'
+                '\n[tts_voice_overrides]\n"Pilot" = "de_DE-thorsten-high"\n'
+                '\n[llm_thinking_overrides]\n"Pilot" = "high"\n',
+                encoding="utf-8",
+            )
 
             with patch.dict("os.environ", {"XDG_CONFIG_HOME": directory}):
                 config = load_config()
 
-                self.assertEqual(config.llm_model, "local-model")
+                self.assertEqual(config.profile_models, {"__global__": "local-model", "Pilot": "pilot-model"})
+                self.assertEqual(config.profile_voices, {
+                    "__global__": "en_US-amy-medium", "Pilot": "de_DE-thorsten-high"})
+                self.assertEqual(config.profile_thinking, {"__global__": "low", "Pilot": "high"})
+                self.assertEqual(config.profile_response_languages, {"__global__": "English"})
                 self.assertEqual(config_path(), root / "voxcomm" / "config.toml")
                 self.assertEqual(load_config(config_path()), config)
                 self.assertTrue(legacy.exists())

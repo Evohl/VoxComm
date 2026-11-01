@@ -68,7 +68,12 @@ def capture_input(stop: threading.Event, timeout: float = 15.0) -> str | None:
                     continue
                 for event in events:
                     if event.type == ecodes.EV_KEY and event.value == 1:
-                        return None if event.code == ecodes.KEY_ESC else evdev_key_name(event.code)
+                        if event.code == ecodes.KEY_ESC:
+                            return None
+                        name = evdev_key_name(event.code)
+                        if name and name.startswith("BTN_"):
+                            return f"{name}@{selected.fileobj.name}"
+                        return name
         return None
     finally:
         for key in list(selector.get_map().values()):
@@ -99,13 +104,15 @@ class PttListener:
 
     def _open_inputs(self):
         from evdev import InputDevice, ecodes, list_devices
+        from voxcomm.gamepad import DEVICE_NAME
 
         codes = {}
         for name, profile in self._key_profiles().items():
-            code = evdev_key_code(name)
+            key, _, device_name = name.partition("@")
+            code = evdev_key_code(key)
             if code is None:
                 raise ValueError(tr("Unknown input '{name}'", name=name))
-            codes.setdefault(code, profile)
+            codes.setdefault((code, device_name.lower() or None), profile)
         if not codes:
             return codes, []
         devices, denied = [], False
@@ -117,7 +124,10 @@ class PttListener:
                 continue
             except OSError:
                 continue
-            if codes.keys() & set(device.capabilities().get(ecodes.EV_KEY, [])):
+            caps = set(device.capabilities().get(ecodes.EV_KEY, []))
+            # Own virtual gamepad would re-trigger PTT on its own button presses.
+            wanted = any(code in caps and device_name in (None, device.name.lower()) for code, device_name in codes)
+            if device.name != DEVICE_NAME and wanted:
                 devices.append(device)
             else:
                 device.close()
@@ -157,7 +167,7 @@ class PttListener:
             except Exception as error:
                 self.on_change("error", tr("Keyboard PTT unavailable ({reason}; {error})", reason=reason, error=error))
 
-    def _watch_inputs(self, codes: dict[int, str], devices: list) -> None:
+    def _watch_inputs(self, codes: dict[tuple[int, str | None], str], devices: list) -> None:
         from evdev import ecodes
 
         selector = selectors.DefaultSelector()
@@ -170,8 +180,11 @@ class PttListener:
                     try:
                         for event in device.read():
                             # value 2 ist Auto-Repeat und wird ignoriert.
-                            if event.type == ecodes.EV_KEY and event.code in codes and event.value in (0, 1):
-                                self._set(bool(event.value), codes[event.code])
+                            if event.type != ecodes.EV_KEY or event.value not in (0, 1):
+                                continue
+                            profile = codes.get((event.code, device.name.lower()), codes.get((event.code, None)))
+                            if profile is not None:
+                                self._set(bool(event.value), profile)
                     except OSError:
                         selector.unregister(device)
                         device.close()
