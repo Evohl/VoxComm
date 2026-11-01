@@ -5,6 +5,9 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
+from voxcomm.prompts import VOICE_LANGUAGE_NAMES
+from voxcomm.skills.star_citizen.preconditions import REQUIREMENT_TEXT, UNKNOWN_STATE_TEXT, parse_precondition
+
 EXACT_SCORE = 1.0
 FUZZY_THRESHOLD = 0.8
 FUZZY_CAP = 0.99
@@ -17,28 +20,13 @@ QUESTION_WORDS = frozenset({
     "who", "what", "when", "where", "why", "how", "which", "can", "could", "is", "are", "do", "does", "will",
     "would", "should",
 })
+NEGATION_WORDS = frozenset({"nicht", "nein", "kein", "keine", "keinen", "keinem", "keiner", "keines",
+                            "not", "no", "never", "dont", "cannot", "cant", "wont"})
 _SUFFIXES = ("ing", "ed", "en", "er", "em", "es", "e", "s", "n")
 _SET_LINE = re.compile(r"\{([^{}]+)\}\s*:\s*(.+)")
 _SET_REFERENCE = re.compile(r"\{([^{}]+)\}")
-_REPLY = re.compile(r"\{(DE|EN)\}\s*(.+)")
+_REPLY = re.compile(r"\{([A-Za-z]{2})\}\s*(.+)")
 _BUTTON = re.compile(r"Button\d+", re.IGNORECASE)
-_PRECONDITION_FIELDS = {
-    "pilot seat": "pilot_seat",
-    "pilotensitz": "pilot_seat",
-    "in ship": "in_ship",
-    "im schiff": "in_ship",
-}
-_PRECONDITION_VALUES = {"yes": True, "ja": True, "no": False, "nein": False}
-REQUIREMENT_TEXT = {
-    ("pilot_seat", True): "Captain, ship controls are unavailable until you take the pilot seat.",
-    ("pilot_seat", False): "Captain, leave the pilot seat before requesting this action.",
-    ("in_ship", True): "Captain, board the ship before requesting this shipboard action.",
-    ("in_ship", False): "Captain, leave the ship before requesting this action.",
-}
-UNKNOWN_STATE_TEXT = {
-    "pilot_seat": "Captain, pilot-seat status is unknown. I am waiting for Star Citizen telemetry before enabling ship controls.",
-    "in_ship": "Captain, ship status is unknown. I am waiting for Star Citizen telemetry before processing this shipboard action.",
-}
 _FILLER_TEXT = "bitte mal doch jetzt kurz danke hey ok okay please mich mir fuer"
 
 
@@ -84,17 +72,74 @@ def _parse_button(field: str, line_number: int) -> tuple[str, bool]:
     return button, hold
 
 
-def _parse_replies(field: str, line_number: int) -> dict[str, str]:
+def parse_replies(field: str, line_number: int = 0) -> dict[str, str]:
     replies: dict[str, str] = {}
-    for part in field.split("|"):
+    parts = []
+    part = []
+    index = 0
+    while index < len(field):
+        character = field[index]
+        if character == "\\" and index + 1 < len(field) and field[index + 1] in ("\\", "|"):
+            part.append(field[index + 1])
+            index += 2
+            continue
+        if character == "|":
+            parts.append("".join(part))
+            part = []
+        else:
+            part.append(character)
+        index += 1
+    parts.append("".join(part))
+    for part in parts:
         match = _REPLY.fullmatch(part.strip())
-        if match is None:
-            raise ValueError(f"line {line_number}: reply must be {{DE}} text or {{EN}} text")
-        tag = match.group(1)
+        if match is None or not match.group(2).strip():
+            raise ValueError(f"line {line_number}: reply must be {{language code}} text")
+        tag = "CS" if match.group(1).upper() == "CZ" else match.group(1).upper()
+        if tag.lower() not in VOICE_LANGUAGE_NAMES:
+            raise ValueError(f"line {line_number}: unknown reply language {{{match.group(1)}}}")
         if tag in replies:
             raise ValueError(f"line {line_number}: duplicate {{{tag}}} reply")
         replies[tag] = match.group(2).strip()
     return replies
+
+
+def format_replies(replies: dict[str, str]) -> str:
+    return " | ".join(f"{{{tag}}} " + text.replace("\\", "\\\\").replace("|", "\\|")
+                      for tag, text in replies.items())
+
+
+def merge_catalog_reply_overrides(catalog: str, overrides: dict[tuple[str, str], str]) -> tuple[str, set[tuple[str, str]]]:
+    try:
+        parse_action_catalog(catalog)
+    except ValueError:
+        return catalog, set()
+    merged = set()
+    lines = []
+    for line in catalog.splitlines(keepends=True):
+        parts = line.rstrip("\r\n").split("=>")
+        if len(parts) != 4:
+            lines.append(line)
+            continue
+        action = parts[0].strip()
+        replies = parse_replies(parts[3])
+        normalized_overrides: dict[str, list[tuple[str, str]]] = {}
+        for (name, tag), text in overrides.items():
+            normalized_tag = reply_language_tag(tag)
+            if name == action and normalized_tag:
+                normalized_overrides.setdefault(normalized_tag, []).append((tag, text))
+        for normalized_tag, entries in normalized_overrides.items():
+            if len({text for _tag, text in entries}) != 1:
+                continue
+            text = entries[0][1]
+            if text.strip() and not any(delimiter in text for delimiter in ("\n", "\r", "=>")):
+                replies[normalized_tag] = text.strip()
+                merged.update((action, tag) for tag, _text in entries)
+        if any(name == action for name, _tag in merged):
+            ending = line[len(line.rstrip("\r\n")):]
+            lines.append("=>".join(parts[:3]) + "=> " + format_replies(replies) + ending)
+        else:
+            lines.append(line)
+    return "".join(lines), merged
 
 
 def _parse_set(line: str, line_number: int, sets: dict[str, tuple[str, ...]]) -> None:
@@ -139,15 +184,9 @@ def _parse_groups(field: str, line_number: int, sets: dict[str, tuple[str, ...]]
 
 def _parse_precondition(line: str, line_number: int) -> tuple[str, bool] | None:
     """Parse a [field value] directive; [] clears the precondition for the following actions."""
-    inner = line[1:-1]
-    if not inner.strip():
+    if not line[1:-1].strip():
         return None
-    words = _normalize_phrase(inner).split()
-    field = _PRECONDITION_FIELDS.get(" ".join(words[:-1]))
-    value = _PRECONDITION_VALUES.get(words[-1]) if words else None
-    if field is None or value is None:
-        raise ValueError(f"line {line_number}: precondition must be [pilot seat yes], [pilot seat no], [in ship yes] or []")
-    return field, value
+    return parse_precondition(_normalize_phrase(line[1:-1]).split(), line_number)
 
 
 def unmet_requirement(action: dict[str, object], state: dict[str, bool | None]) -> tuple[str, bool] | None:
@@ -202,7 +241,7 @@ def parse_action_catalog(catalog: str) -> list[dict[str, object]]:
             "button": button,
             "hold": hold,
             "requires": requirement,
-            "replies": _parse_replies(parts[3], line_number),
+            "replies": parse_replies(parts[3], line_number),
         })
     return actions
 
@@ -261,16 +300,28 @@ def _resolve_clause(actions: list[dict[str, object]],
     return "match", pool[0][1]
 
 
-def _is_question(prompt: str) -> bool:
-    if "?" in prompt:
-        return True
-    first_words = _normalize_phrase(prompt).split()[:1]
-    return bool(first_words) and first_words[0] in QUESTION_WORDS
+def classify_utterance(prompt: str, keyword: str = "") -> str:
+    normalized = _normalize_phrase(re.sub(r"(?i)\b(don|can|won)['’]t\b", r"\1t", prompt))
+    words = normalized.split()
+    if any(word in NEGATION_WORDS for word in words):
+        return "negated"
+    keyword_words = _normalize_phrase(keyword).split()
+    while words:
+        if keyword_words and words[:len(keyword_words)] == keyword_words:
+            words = words[len(keyword_words):]
+        elif words[0] in {"hey", "hi", "hallo", "hello", "bitte", "please"}:
+            words = words[1:]
+        else:
+            break
+    if "?" in prompt or (words and words[0] in QUESTION_WORDS):
+        return "question"
+    return "command"
 
 
 def resolve_utterance(actions: list[dict[str, object]], prompt: str) -> Resolution:
-    if _is_question(prompt):
-        return Resolution("question")
+    classification = classify_utterance(prompt)
+    if classification != "command":
+        return Resolution(classification)
     clauses = []
     for part in CLAUSE_SEPARATOR.split(prompt):
         words = tuple(word for word in _stem_tuple(_normalize_phrase(part)) if word not in _FILLER)
@@ -300,15 +351,17 @@ def contains_keyword(prompt: str, keyword: str) -> bool:
     return any(words[start:start + size] == phrase for start in range(len(words) - size + 1))
 
 
-_LANGUAGE_TAGS = {
+_LANGUAGE_TAGS = {label.casefold(): code.upper() for code, label in VOICE_LANGUAGE_NAMES.items()} | {
     "de": "DE", "german": "DE", "deutsch": "DE",
     "en": "EN", "english": "EN", "englisch": "EN",
+    "francais": "FR", "français": "FR", "französisch": "FR",
+    "cz": "CS", "tschechisch": "CS", "spanisch": "ES",
 }
 
 
 def reply_language_tag(language: str) -> str:
     name = language.strip().casefold().replace("_", "-").split("-", 1)[0]
-    return _LANGUAGE_TAGS.get(name, "")
+    return _LANGUAGE_TAGS.get(name, name.upper() if name in VOICE_LANGUAGE_NAMES else "")
 
 
 def action_reply(action: dict[str, object], language: str) -> str:
@@ -318,7 +371,7 @@ def action_reply(action: dict[str, object], language: str) -> str:
 
 def apply_reply_overrides(actions: list[dict[str, object]],
                           overrides: dict[tuple[str, str], str]) -> list[dict[str, object]]:
-    """Merge custom replies keyed by (action name, DE|EN) over the catalog replies."""
+    """Merge custom replies keyed by action name and language code over the catalog replies."""
     merged = []
     for action in actions:
         custom = {tag: text for (name, tag), text in overrides.items() if name == action["name"]}

@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from voxcomm.gamelog import GameLogTracker
 from voxcomm.gamelog.facts import (
@@ -8,7 +9,7 @@ from voxcomm.gamelog.facts import (
 )
 from voxcomm.gamelog.paths import log_path_from_executable
 from voxcomm.gamelog.process import find_game_executable
-from voxcomm.gamelog.reader import LogReader
+from voxcomm.gamelog.reader import LogReader, RecentLogReader
 
 LOCATION_LINE = "<X> requested inventory for Location[Nyx_Levski] of ship"
 STREAMING_SOC_LINE = (
@@ -89,7 +90,7 @@ class FactsTests(unittest.TestCase):
     def test_leave_only_changes_in_ship(self):
         facts = GameFacts()
         facts.apply([ROUTE_LINE, LEAVE_LINE])
-        self.assertEqual((facts.ship, facts.in_ship, facts.pilot_seat), ("Crusader C1 Spirit", False, True))
+        self.assertEqual((facts.ship, facts.in_ship, facts.pilot_seat), ("Crusader C1 Spirit", False, False))
 
     def test_exit_without_join_uses_vehicle_name(self):
         facts = GameFacts()
@@ -171,6 +172,46 @@ class FactsTests(unittest.TestCase):
 
 
 class ReaderTests(unittest.TestCase):
+    def test_recent_reader_bounds_bytes_and_recovers_partial_utf8_lines(self):
+        with tempfile.TemporaryDirectory() as root:
+            log = Path(root) / "Game.log"
+            log.write_bytes(b"discarded\nfirst\nsecond\n")
+            with patch("voxcomm.gamelog.reader.RECENT_LOG_MAX_BYTES", 16):
+                reader = RecentLogReader(log, max_lines=10)
+                self.assertEqual(reader.read_new_lines(), (True, ["first", "second"]))
+            with log.open("ab") as handle:
+                handle.write("Grü".encode("utf-8")[:-1])
+            self.assertEqual(reader.read_new_lines(), (False, []))
+            with log.open("ab") as handle:
+                handle.write("Grü".encode("utf-8")[-1:] + b"n\n")
+            self.assertEqual(reader.read_new_lines(), (False, ["Grün"]))
+
+    def test_recent_reader_bounds_existing_lines_and_follows_partial_updates(self):
+        with tempfile.TemporaryDirectory() as root:
+            log = Path(root) / "Game.log"
+            log.write_text("".join(f"line {number}\n" for number in range(10050)) + "part", encoding="utf-8")
+            reader = RecentLogReader(log)
+            reset, lines = reader.read_new_lines()
+            self.assertTrue(reset)
+            self.assertEqual(len(lines), 10000)
+            self.assertEqual((lines[0], lines[-1]), ("line 50", "line 10049"))
+            with log.open("a", encoding="utf-8") as handle:
+                handle.write("ial\nnext\n")
+            self.assertEqual(reader.read_new_lines(), (False, ["partial", "next"]))
+
+    def test_recent_reader_resets_after_truncation_or_replacement(self):
+        with tempfile.TemporaryDirectory() as root:
+            log = Path(root) / "Game.log"
+            log.write_text("old line\n", encoding="utf-8")
+            reader = RecentLogReader(log)
+            self.assertEqual(reader.read_new_lines(), (True, ["old line"]))
+            log.write_text("new\n", encoding="utf-8")
+            self.assertEqual(reader.read_new_lines(), (True, ["new"]))
+            replacement = Path(root) / "replacement"
+            replacement.write_text("replacement line\n", encoding="utf-8")
+            replacement.replace(log)
+            self.assertEqual(reader.read_new_lines(), (True, ["replacement line"]))
+
     def test_returns_only_new_complete_lines(self):
         with tempfile.TemporaryDirectory() as root:
             log = Path(root) / "Game.log"
@@ -218,6 +259,7 @@ class TrackerTests(unittest.TestCase):
             executable = f"Z:{Path(root).as_posix()}/Bin64/StarCitizen.exe"
             tracker = GameLogTracker(executable_finder=lambda: executable)
             self.assertIn("Im Schiff: unbekannt", tracker.prompt_context())
+            self.assertEqual(tracker.path, log)
 
             log.write_text(LOCATION_LINE + "\n" + JOIN_LINE + "\n", encoding="utf-8")
             text = tracker.prompt_context()

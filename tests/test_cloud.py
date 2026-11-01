@@ -9,6 +9,12 @@ from voxcomm.providers import cloud
 
 class CloudModelTests(unittest.TestCase):
     @patch("voxcomm.providers.cloud.httpx.get")
+    def test_list_cloud_models_supports_optional_api_key(self, get):
+        get.return_value.json.return_value = {"models": []}
+        cloud.list_cloud_models("https://example.test", "secret")
+        self.assertEqual(get.call_args.kwargs["headers"], {"Authorization": "Bearer secret"})
+
+    @patch("voxcomm.providers.cloud.httpx.get")
     def test_list_cloud_models_parses_names_and_uses_tags_route(self, get):
         response = Mock()
         response.json.return_value = {"models": [{"name": "a"}, {"name": ""}]}

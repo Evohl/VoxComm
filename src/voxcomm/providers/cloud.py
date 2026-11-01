@@ -11,6 +11,7 @@ import httpx
 
 from voxcomm.providers.web import MAX_QUERY_LENGTH, MAX_RESULTS, MAX_SNIPPET_LENGTH, MAX_TITLE_LENGTH
 from voxcomm.i18n import tr
+from voxcomm.providers.auth import bearer_headers
 
 
 CLOUD_BASE_URL = "https://ollama.com"
@@ -59,12 +60,12 @@ def store_models(models: list[str]) -> None:
 
 
 def _headers(api_key: str) -> dict[str, str]:
-    key = api_key.strip()
-    return {"Authorization": f"Bearer {key}"} if key else {}
+    return bearer_headers(api_key)
 
 
-def list_cloud_models(base_url: str) -> list[str]:
-    response = httpx.get(f"{base_url.rstrip('/')}/api/tags", timeout=TAGS_TIMEOUT_SECONDS)
+def list_cloud_models(base_url: str, api_key: str = "") -> list[str]:
+    response = httpx.get(f"{base_url.rstrip('/')}/api/tags", timeout=TAGS_TIMEOUT_SECONDS,
+                         **({"headers": bearer_headers(api_key)} if api_key.strip() else {}))
     response.raise_for_status()
     return [item["name"] for item in response.json().get("models", []) if item.get("name")]
 

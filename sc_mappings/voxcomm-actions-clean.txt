@@ -11,6 +11,13 @@
 #
 # Lines starting with # are ignored. Sets are defined with {name}: keyword, keyword
 # Matching ignores case, umlauts (ä=ae, ö=oe, ü=ue), and simple inflections.
+#
+# Preconditions: [field value] line applies to all following action rows until the next [...] line.
+#   [pilot seat yes]   only when the Star Citizen log reports the pilot seat (also: [pilot seat no])
+#   [in ship yes]      only when the Star Citizen log reports being in a ship (also: [in ship no])
+#   []                 clears the precondition
+# Unknown state (no log data yet) blocks actions with a precondition until the game log confirms the required state.
+# Custom replies per action and language are set in Settings; the {DE}/{EN} texts here are the defaults.
 
 {call}: call, hail, rufen, kontaktieren, anrufen
 {deploy}: deploy, ausfahren, ausklappen, herunterfahren
@@ -25,6 +32,8 @@
 # Unlock All Doors => tueren, doors + {entsperren} => Button15 => {DE} Tueren entriegelt. | {EN} Doors unlocked.
 # Port Lock All => ports, port + {sperren} => Button16 => {DE} Ports verriegelt. | {EN} Ports locked.
 # Port Unlock All => ports, port + {entsperren} => Button17 => {DE} Ports entriegelt. | {EN} Ports unlocked.
+
+[pilot seat yes]
 
 # Operator modes
 Mining Operator Mode => operator mode + mining => Button1 => {DE} Bergbau-Modus gewählt. | {EN} Mining mode selected.
@@ -42,8 +51,8 @@ Light Amplification Off => light amplification, nightvision, lichtverstärkung, 
 Self Destruct => self destruct, destroy ship, selbstzerstörung => Button11 hold => {DE} Selbstzerstörung initiiert. | {EN} Self-destruct initiated.
 
 # Doors
-Open All Doors => türen, doors + öffnen, open => Button12 => {DE} Türen geöffnet. | {EN} Doors opened.
-Close All Doors => türen, doors + schliessen, close => Button13 => {DE} Türen geschlossen. | {EN} Doors closed.
+Open All Doors => türen, doors, exterior + öffnen, open => Button12 => {DE} Türen geöffnet. | {EN} Doors opened.
+Close All Doors => türen, doors, exterior + schliessen, close => Button13 => {DE} Türen geschlossen. | {EN} Doors closed.
 
 # Cruise, decoupled, speed limiter, G-force
 Cruise Mode On => cruise, cruise mode + {aktivieren} => Button18 => {DE} Cruise Mode an. | {EN} Cruise mode on.
@@ -56,8 +65,8 @@ G-Force Safety On => g-force, g-kraft + sicherheit, safety + {aktivieren} => But
 G-Force Safety Off => g-force, g-kraft + sicherheit, safety + {deaktivieren} => Button25 => {DE} G-Force-Sicherheit aus. | {EN} G-force safety off.
 
 # Landing gear: "Fahrwerk" or "landing gear" plus a verb or up/down
-Landing System Deploy => fahrwerk, landing gear + {deploy}, down, runter => Button26 => {DE} Fahrwerk ausgefahren. | {EN} Landing gear deployed.
-Landing System Retract => fahrwerk, landing gear + {retract}, up, hoch => Button27 => {DE} Fahrwerk eingefahren. | {EN} Landing gear retracted.
+Landing System Deploy => fahrwerk, landing gear + {deploy}, down, runter => Button26 => {DE} Fahrwerk wird ausgefahren. | {EN} Landing gear deploying.
+Landing System Retract => fahrwerk, landing gear + {retract}, up, hoch => Button27 => {DE} Fahrwerk wird eingefahren. | {EN} Landing gear retracting.
 
 # VTOL, autoland
 VTOL On => vtol + {aktivieren} => Button28 => {DE} VTOL an. | {EN} VTOL on.
@@ -70,7 +79,7 @@ Request Cargo Loading => cargo + {call} => Button32 => {DE} Cargo-Verladung ange
 
 # Master modes
 Master Mode NAV => navigation mode, navigationsmodus => Button33 => {DE} NAV-Modus gewählt. | {EN} NAV mode selected.
-Master Mode SCM => combat mode, kampfmodus => Button34 => {DE} SCM-Modus gewählt. | {EN} SCM mode selected.
+Master Mode SCM => combat mode, Weaapon mode, Kampfmodus, waffenmodus => Button34 => {DE} SCM-Modus gewählt. | {EN} SCM mode selected.
 
 # Quantum and docking
 Request Quantum Jump => quantum jump, quantumsprung + anfragen, request => Button35 => {DE} Sprunganfrage gestellt. | {EN} Jump request sent.

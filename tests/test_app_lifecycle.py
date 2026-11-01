@@ -1,13 +1,15 @@
 import os
 import signal
+import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from PySide6.QtCore import QAbstractAnimation, QPoint, QPointF, QTimer, Qt
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtTest import QTest
+from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFrame, QLabel, QLineEdit, QMessageBox, QPushButton, QSystemTrayIcon,
     QToolButton, QWidget,
@@ -58,6 +60,39 @@ class GameLogReplyTests(unittest.TestCase):
         self.assertEqual(game_event_reply(overrides, NAV_TARGET_SET, "Star Citizen", "EN"), "Route set.")
         self.assertEqual(game_event_reply(overrides, NAV_TARGET_SET, "Star Citizen", "DE"), "Captain, Navziel ausgewählt.")
         self.assertEqual(game_event_reply(overrides, NAV_TARGET_SET, "__global__", "EN"), "Captain, nav target selected.")
+
+    def test_additional_languages_and_default_fallback(self):
+        overrides = {reply_override_key("Star Citizen", game_reply_action(NAV_TARGET_SET), "ES"): "Destino fijado."}
+        self.assertEqual(game_event_reply(overrides, NAV_TARGET_SET, "Star Citizen", "ES"), "Destino fijado.")
+        self.assertEqual(game_event_reply(overrides, NAV_TARGET_SET, "__global__", "ES"), "Objetivo de navegación seleccionado.")
+        self.assertEqual(game_event_reply(overrides, NAV_TARGET_SET, "__global__", "XX"), "Captain, nav target selected.")
+
+    def test_every_tts_language_selects_its_announcement(self):
+        from voxcomm.action_catalog import reply_language_tag
+        from voxcomm.prompts import VOICE_LANGUAGE_NAMES
+        overrides = {reply_override_key("Star Citizen", game_reply_action(NAV_TARGET_SET), code.upper()): label
+                     for code, label in VOICE_LANGUAGE_NAMES.items()}
+        for code, label in VOICE_LANGUAGE_NAMES.items():
+            with self.subTest(language=label):
+                self.assertEqual(game_event_reply(overrides, NAV_TARGET_SET, "Star Citizen", reply_language_tag(label)),
+                                 label)
+
+    def test_every_language_has_translated_defaults_and_local_ship_name(self):
+        from voxcomm.action_catalog import parse_replies, format_replies
+        from voxcomm.prompts import VOICE_LANGUAGE_NAMES
+        from voxcomm.skills.star_citizen.events import GAME_EVENT_TEXT, game_reply_defaults
+        for event in GAME_EVENT_TEXT:
+            defaults = game_reply_defaults(event)
+            self.assertEqual(set(defaults), {code.upper() for code in VOICE_LANGUAGE_NAMES})
+            self.assertEqual(parse_replies(format_replies(defaults)), defaults)
+            for code in VOICE_LANGUAGE_NAMES:
+                with self.subTest(event=event, language=code):
+                    result = game_event_reply({}, event, "__global__", code.upper(), "Testship")
+                    self.assertNotIn("{ship}", result)
+                    self.assertEqual(result, defaults[code.upper()].replace("{ship}", "Testship"))
+                    if code not in {"en", "de", "fr"}:
+                        self.assertNotEqual(defaults[code.upper()], defaults["EN"])
+                    self.assertNotIn("{ship}", game_event_reply({}, event, "__global__", code.upper()))
 
 
 class ApplicationLifecycleTests(unittest.TestCase):
@@ -328,7 +363,8 @@ class ApplicationLifecycleTests(unittest.TestCase):
                    profile_voices={"Star Citizen": "ship-voice"})
         dialog = SettingsDialog(config)
 
-        self.assertFalse(dialog.profile_hotkey.isEnabled())
+        self.assertTrue(dialog.profile_hotkey.isEnabled())
+        self.assertEqual(dialog.profile_hotkey.value(), "F9")
         self.assertEqual(dialog.special_hotkeys, {"Elite": "f11"})
 
         dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Star Citizen"))
@@ -336,15 +372,17 @@ class ApplicationLifecycleTests(unittest.TestCase):
         self.assertEqual(dialog.profile_hotkey.value(), "")
         dialog.profile_hotkey._apply("f9")
         self.assertEqual(dialog.profile_hotkey.value(), "")
-        self.assertIn("push-to-talk", dialog.discovery_status.text())
+        self.assertIn("Default", dialog.discovery_status.text())
         dialog.profile_hotkey._apply("f11")
         self.assertEqual(dialog.profile_hotkey.value(), "")
         self.assertIn("Elite", dialog.discovery_status.text())
         dialog.profile_hotkey._apply("f10")
         self.assertEqual(dialog.special_hotkeys["Star Citizen"], "f10")
 
-        dialog.key._apply("f10")
-        self.assertEqual(dialog.key.value(), "F9")
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("__global__"))
+        dialog.profile_hotkey._apply("f10")
+        self.assertEqual(dialog.profile_hotkey.value(), "F9")
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Star Citizen"))
 
         with patch("voxcomm.app.QInputDialog.getText", return_value=("SC", True)):
             dialog._rename_special_profile()
@@ -365,11 +403,32 @@ class ApplicationLifecycleTests(unittest.TestCase):
         updated = dialog.apply(config)
         self.assertEqual(updated.special_hotkeys, {})
         self.assertEqual(updated.ptt_key, "F9")
-        self.assertIsNotNone(dialog.key.clear_button)
-        dialog.key.clear_button.click()
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("__global__"))
+        self.assertIsNotNone(dialog.profile_hotkey.clear_button)
+        dialog.profile_hotkey.clear_button.click()
         updated = dialog.apply(config)
         self.assertEqual(updated.ptt_key, "")
         self.assertFalse(hasattr(dialog, "device"))
+        dialog.deleteLater()
+
+    def test_default_profile_hotkey_is_editable_and_routes_to_default(self):
+        from voxcomm.ptt import PttListener
+        app = QApplication.instance() or QApplication([])
+        config = AppConfig(ptt_key="F9", special_prompts={"Work": ""}, special_hotkeys={"Work": "f10"})
+        dialog = SettingsDialog(config)
+        self.assertEqual(dialog.special_profile.currentText(), "Default")
+        self.assertEqual(dialog.profile_hotkey.value(), "F9")
+        dialog.profile_hotkey._apply("f12")
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Work"))
+        dialog.profile_hotkey._apply("f12")
+        self.assertEqual(dialog.profile_hotkey.value(), "f10")
+        updated = dialog.apply(config)
+        self.assertEqual(updated.ptt_key, "f12")
+        listener = PttListener(updated.ptt_key, lambda *_event: None,
+                               {key: name for name, key in updated.special_hotkeys.items()})
+        self.assertEqual(listener._key_profiles(), {"f12": "", "f10": "Work"})
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("__global__"))
+        self.assertEqual(dialog.profile_hotkey.value(), "f12")
         dialog.deleteLater()
 
     def test_profile_hotkey_selects_prompt_profile_for_recording(self):
@@ -871,15 +930,15 @@ class ApplicationLifecycleTests(unittest.TestCase):
         titles = [label.text() for label in dialog.findChildren(QLabel, "sectionTitle")]
         self.assertEqual(
             sorted(titles),
-            sorted(["INPUT", "SPEECH RECOGNITION", "LANGUAGE MODEL", "SPEECH OUTPUT", "PROMPT", "STAR CITIZEN LOG", "VOXCOMM CONTROLLER"]),
+            sorted(["INPUT", "SPEECH RECOGNITION", "LANGUAGE MODEL", "SPEECH OUTPUT", "PROFILE SETTINGS", "SKILLS AND TOOLS", "STAR CITIZEN LOG", "VOXCOMM CONTROLLER"]),
         )
         sections = dialog.findChildren(QFrame, "section")
-        self.assertEqual(len(sections), 7)
+        self.assertEqual(len(sections), 8)
         self.assertEqual(dialog.input_action_catalog.toPlainText(), "")
         self.assertTrue(dialog.action_catalog_section.isHidden())
         self.assertIn(system_accent().name(), dialog.styleSheet())
         self.assertEqual(dialog.findChild(QPushButton, "primary").text(), "Save")
-        for field in (dialog.stt, dialog.tts, dialog.llm_url, dialog.key, dialog.special_prompt):
+        for field in (dialog.stt, dialog.tts, dialog.llm_url, dialog.profile_hotkey, dialog.special_prompt):
             self.assertTrue(any(section.isAncestorOf(field) for section in sections))
 
     def test_settings_dialog_loads_the_configured_translation(self):
@@ -889,20 +948,518 @@ class ApplicationLifecycleTests(unittest.TestCase):
 
         self.assertEqual(dialog.findChild(QLabel, "dialogTitle").text(), "Einstellungen")
         self.assertEqual(dialog.web_search.text(), "Websuche erlauben")
+        self.assertEqual([dialog.settings_tabs.tabText(index) for index in range(dialog.settings_tabs.count())],
+                         ["Allgemeine Einstellungen", "Profile"])
+        self.assertEqual(dialog.profile_tabs.tabText(0), "Profileinstellungen")
+        self.assertEqual(dialog.profile_tabs.tabText(1), "Skills und Tools")
         self.assertEqual(dialog.apply(config).ui_language, "de")
 
-    def test_settings_dialog_is_not_parented_to_the_overlay(self):
+    def test_profile_navigation_follows_each_profiles_permissions(self):
+        app = QApplication.instance() or QApplication([])
+        config = AppConfig(special_prompts={"Star Citizen": "Ship context"},
+                           enabled_tools={"Star Citizen": ["input_control", "star_citizen_log"]})
+        dialog = SettingsDialog(config)
+        dialog.settings_tabs.setCurrentIndex(1)
+        self.assertEqual([dialog.profile_tabs.tabText(index) for index in range(dialog.profile_tabs.count())],
+                         ["Profile settings", "Skills and tools", "VoxComm Controller", "Star Citizen log"])
+        self.assertFalse(dialog.profile_tabs.isTabVisible(2))
+        self.assertFalse(dialog.profile_tabs.isTabVisible(3))
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Star Citizen"))
+        self.assertTrue(dialog.profile_tabs.isTabVisible(2))
+        self.assertTrue(dialog.profile_tabs.isTabVisible(3))
+        dialog.profile_tabs.setCurrentIndex(2)
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("__global__"))
+        self.assertFalse(dialog.profile_tabs.isTabVisible(2))
+        self.assertFalse(dialog.profile_tabs.isTabVisible(3))
+        self.assertNotEqual(dialog.profile_tabs.currentIndex(), 2)
+        dialog.profile_tabs.setCurrentIndex(1)
+        dialog.input_control.setChecked(True)
+        self.assertTrue(dialog.profile_tabs.isTabVisible(2))
+        self.assertEqual(dialog.apply(config).enabled_tools["__global__"], ["input_control"])
+        dialog.deleteLater()
+
+    def _wait_for_controller_signal(self, app, spy, count):
+        for _ in range(100):
+            app.processEvents()
+            if spy.count() >= count:
+                app.processEvents()
+                return
+            QTest.qWait(10)
+        self.fail("Controller result signal was not received")
+
+    def test_manual_controller_buttons_send_tap_and_hold_without_blocking_ui(self):
+        from voxcomm.gamepad import BUTTON_COUNT
+
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig(enabled_tools={"__global__": ["input_control"]}))
+        self.assertTrue(dialog.manual_controller_panel.isHidden())
+        self.assertEqual(len(dialog.manual_buttons), BUTTON_COUNT)
+        dialog.manual_controller_toggle.click()
+        self.assertFalse(dialog.manual_controller_panel.isHidden())
+        spy = QSignalSpy(dialog.discovery.controller_pressed)
+        with patch("voxcomm.gamepad.press_gamepad_button", return_value="Button100") as press:
+            dialog.manual_buttons[99].click()
+            self._wait_for_controller_signal(app, spy, 1)
+            press.assert_called_once_with("Button100", hold=False)
+            self.assertEqual(dialog.manual_status.text(), "Pressed Button100")
+        dialog.manual_hold.setChecked(True)
+        with patch("voxcomm.gamepad.press_gamepad_button", return_value="Button1") as press:
+            dialog.manual_buttons[0].click()
+            self._wait_for_controller_signal(app, spy, 2)
+            press.assert_called_once_with("Button1", hold=True)
+        dialog.deleteLater()
+
+    def test_manual_controller_waits_for_active_press_without_queuing_another(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig(enabled_tools={"__global__": ["input_control"]}))
+        started = threading.Event()
+        release = threading.Event()
+        spy = QSignalSpy(dialog.discovery.controller_pressed)
+
+        def press_button(button, hold=False):
+            started.set()
+            release.wait(2)
+            return button
+
+        with patch("voxcomm.gamepad.press_gamepad_button", side_effect=press_button) as press:
+            try:
+                dialog.manual_buttons[0].click()
+                self.assertTrue(started.wait(1))
+                self.assertFalse(dialog.manual_grid.isEnabled())
+                dialog.manual_buttons[1].click()
+                self.assertEqual(press.call_count, 1)
+            finally:
+                release.set()
+            self._wait_for_controller_signal(app, spy, 1)
+            self.assertTrue(dialog.manual_grid.isEnabled())
+        dialog.deleteLater()
+
+    def test_manual_controller_delayed_press_and_cancellation(self):
+        app = QApplication.instance() or QApplication([])
+        config = AppConfig(special_prompts={"Other": ""}, enabled_tools={"__global__": ["input_control"]})
+        dialog = SettingsDialog(config)
+        dialog.manual_controller_toggle.click()
+        dialog.manual_delay.setValue(2)
+        with patch("voxcomm.gamepad.press_gamepad_button", return_value="Button5") as press:
+            dialog.manual_buttons[4].click()
+            self.assertTrue(dialog._manual_timer.isActive())
+            self.assertFalse(dialog.manual_grid.isEnabled())
+            dialog.manual_cancel.click()
+            self.assertFalse(dialog._manual_timer.isActive())
+            self.assertTrue(dialog.manual_grid.isEnabled())
+            press.assert_not_called()
+            dialog.manual_buttons[4].click()
+            dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Other"))
+            self.assertFalse(dialog._manual_timer.isActive())
+            press.assert_not_called()
+            dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("__global__"))
+            dialog.manual_buttons[4].click()
+            dialog.input_control.setChecked(False)
+            self.assertFalse(dialog._manual_timer.isActive())
+            press.assert_not_called()
+            dialog.input_control.setChecked(True)
+            dialog.manual_buttons[4].click()
+            dialog.manual_controller_toggle.click()
+            self.assertFalse(dialog._manual_timer.isActive())
+            press.assert_not_called()
+            dialog.manual_controller_toggle.click()
+            dialog.manual_buttons[4].click()
+            spy = QSignalSpy(dialog.discovery.controller_pressed)
+            dialog._manual_timer.start(1)
+            self._wait_for_controller_signal(app, spy, 1)
+            press.assert_called_once_with("Button5", hold=False)
+        dialog.manual_buttons[4].click()
+        dialog.close()
+        self.assertFalse(dialog._manual_timer.isActive())
+        dialog.deleteLater()
+
+    def test_manual_controller_reports_daemon_errors(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig(ui_language="de", enabled_tools={"__global__": ["input_control"]}))
+        spy = QSignalSpy(dialog.discovery.controller_pressed)
+        with patch("voxcomm.gamepad.press_gamepad_button", side_effect=OSError("not running")):
+            dialog.manual_buttons[0].click()
+            self._wait_for_controller_signal(app, spy, 1)
+        self.assertIn("Controller-Fehler: not running", dialog.manual_status.text())
+        self.assertTrue(dialog.manual_grid.isEnabled())
+        dialog.deleteLater()
+
+    def test_expanded_manual_controller_fits_minimum_dialog_width(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig(ui_language="de", enabled_tools={"__global__": ["input_control"]}))
+        dialog._lookup_thinking = lambda: None
+        dialog.resize(1040, 720)
+        dialog.show()
+        dialog.settings_tabs.setCurrentIndex(1)
+        dialog.profile_tabs.setCurrentIndex(2)
+        dialog.manual_controller_toggle.click()
+        app.processEvents()
+        scroll = dialog.profile_tabs.currentWidget()
+        self.assertEqual(scroll.horizontalScrollBar().maximum(), 0)
+        self.assertEqual(dialog.manual_delay.height(), dialog.sample_rate.height())
+        self.assertGreater(dialog.manual_delay.x(), dialog.manual_hold.geometry().right())
+        self.assertGreater(dialog.manual_buttons[99].width(), 0)
+        self.assertEqual(dialog.manual_buttons[99].text(), "Button100")
+        dialog.close()
+        dialog.deleteLater()
+
+    def test_announcement_fields_keep_profile_specific_languages(self):
+        app = QApplication.instance() or QApplication([])
+        key = reply_override_key("Star Citizen", game_reply_action(NAV_TARGET_SET), "ES")
+        config = AppConfig(special_prompts={"Star Citizen": ""}, input_reply_overrides={key: "Destino anterior."})
+        dialog = SettingsDialog(config)
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Star Citizen"))
+        field = dialog._game_reply_fields[NAV_TARGET_SET]
+        self.assertIn("{ES} Destino anterior.", field.text())
+        self.assertIn("{FR}", field.text())
+        self.assertTrue(field.text().startswith("{EN}"))
+        self.assertEqual(field.cursorPosition(), 0)
+        from voxcomm.action_catalog import parse_replies
+        from voxcomm.prompts import VOICE_LANGUAGE_NAMES
+        self.assertEqual(set(parse_replies(field.text())), {code.upper() for code in VOICE_LANGUAGE_NAMES})
+        field.setText("{EN} Destination | {DE} Ziel | {ES} Destino | {CZ} Cíl")
+        field.textEdited.emit(field.text())
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("__global__"))
+        self.assertNotIn("{ES} Destino anterior.", field.text())
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Star Citizen"))
+        self.assertIn("{CZ} Cíl", field.text())
+        updated = dialog.apply(config)
+        self.assertEqual(updated.input_reply_overrides[key], "Destino")
+        self.assertEqual(game_event_reply(updated.input_reply_overrides, NAV_TARGET_SET, "Star Citizen", "CS"), "Cíl")
+        dialog.deleteLater()
+
+    def test_invalid_announcement_draft_survives_switch_and_blocks_save(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig(special_prompts={"Star Citizen": ""},
+                                          enabled_tools={"Star Citizen": ["star_citizen_log"]}))
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Star Citizen"))
+        field = dialog._game_reply_fields[NAV_TARGET_SET]
+        field.setText("{ES} ")
+        field.textEdited.emit(field.text())
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("__global__"))
+        saved = []
+        dialog.save_requested.connect(lambda: saved.append(True))
+        dialog._request_save()
+        self.assertEqual(saved, [])
+        self.assertEqual(dialog.special_profile.currentData(), "Star Citizen")
+        self.assertEqual(field.text(), "{ES} ")
+        self.assertIn("Invalid announcement reply", dialog.discovery_status.text())
+        field.setText("{ES} Destino")
+        field.textEdited.emit(field.text())
+        dialog._request_save()
+        self.assertEqual(saved, [True])
+        dialog.deleteLater()
+
+    def test_invalid_announcement_can_be_recovered_after_log_is_disabled(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig(enabled_tools={"__global__": ["star_citizen_log"]}))
+        field = dialog._game_reply_fields[NAV_TARGET_SET]
+        field.setText("{ES}")
+        field.textEdited.emit(field.text())
+        dialog.star_citizen.setChecked(False)
+        saved = []
+        dialog.save_requested.connect(lambda: saved.append(True))
+        dialog._request_save()
+        self.assertEqual(saved, [])
+        self.assertEqual(dialog.profile_tabs.currentIndex(), 1)
+        self.assertIn("Enable Star Citizen Log", dialog.discovery_status.text())
+        dialog.star_citizen.setChecked(True)
+        dialog._request_save()
+        self.assertEqual(dialog.profile_tabs.currentIndex(), 3)
+        field.setText("{ES} Destino")
+        field.textEdited.emit(field.text())
+        dialog._request_save()
+        self.assertEqual(saved, [True])
+        dialog.deleteLater()
+
+    def test_controller_legacy_replies_move_into_catalog_and_remain_editable(self):
+        from voxcomm.action_catalog import parse_action_catalog
+        app = QApplication.instance() or QApplication([])
+        key = reply_override_key("Star Citizen", "Gear", "EN")
+        other = reply_override_key("Star Citizen", "Missing", "DE")
+        config = AppConfig(special_prompts={"Star Citizen": ""},
+                           active_special_prompt="Star Citizen",
+                           input_action_catalogs={"Star Citizen": "Gear => gear => Button1 => {EN} Old"},
+                           input_reply_overrides={key: "Ready | now", other: "Preserve me"})
+        dialog = SettingsDialog(config)
+        self.assertFalse(hasattr(dialog, "reply_action"))
+        self.assertEqual(parse_action_catalog(dialog.input_action_catalog.toPlainText())[0]["replies"]["EN"],
+                         "Ready | now")
+        self.assertFalse(dialog.catalog_warning.isHidden())
+        dialog.input_action_catalog.setPlainText("Gear => gear => Button1 => {EN} Edited | {ES} Listo")
+        updated = dialog.apply(config)
+        self.assertNotIn(key, updated.input_reply_overrides)
+        self.assertEqual(updated.input_reply_overrides[other], "Preserve me")
+        replies = parse_action_catalog(updated.input_action_catalogs["Star Citizen"])[0]["replies"]
+        self.assertEqual(replies, {"EN": "Edited", "ES": "Listo"})
+        dialog.deleteLater()
+
+    def test_controller_legacy_replies_wait_for_invalid_catalog_repair(self):
+        app = QApplication.instance() or QApplication([])
+        key = reply_override_key("__global__", "Gear", "DE")
+        config = AppConfig(input_action_catalogs={"__global__": "invalid"}, input_reply_overrides={key: "Bereit"})
+        dialog = SettingsDialog(config)
+        self.assertFalse(dialog.catalog_warning.isHidden())
+        self.assertEqual(dialog.input_reply_overrides[key], "Bereit")
+        dialog.input_action_catalog.setPlainText("Gear => gear => Button1 => {DE} Alt")
+        updated = dialog.apply(config)
+        self.assertNotIn(key, updated.input_reply_overrides)
+        self.assertIn("{DE} Bereit", updated.input_action_catalogs["__global__"])
+        dialog.deleteLater()
+
+    def test_settings_scroll_at_compact_desktop_size(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig(ui_language="de"))
+        dialog._lookup_thinking = lambda: None
+        dialog.resize(880, 600)
+        dialog.show()
+        app.processEvents()
+        general_scroll = dialog.settings_tabs.widget(0)
+        self.assertEqual(general_scroll.horizontalScrollBar().maximum(), 0)
+        self.assertEqual(general_scroll.verticalScrollBar().maximum(), 0)
+        dialog.settings_tabs.setCurrentIndex(1)
+        dialog.profile_tabs.setCurrentIndex(1)
+        app.processEvents()
+        viewport = dialog.profile_tabs.currentWidget().viewport()
+        point = viewport.mapTo(dialog, QPoint(10, viewport.height() - 10))
+        image = dialog.grab().toImage()
+        self.assertEqual(image.pixelColor(point).name(), system_surface().name())
+        dialog.close()
+        dialog.deleteLater()
+
+    def test_settings_editors_expand_with_the_dialog(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig(enabled_tools={"__global__": ["input_control", "star_citizen_log"]}))
+        dialog._lookup_thinking = lambda: None
+        dialog.resize(1040, 720)
+        dialog.show()
+        dialog.settings_tabs.setCurrentIndex(1)
+        minimum_sizes = {}
+        editors = ((0, dialog.special_prompt), (2, dialog.input_action_catalog), (3, dialog.game_log_view))
+        for index, editor in editors:
+            dialog.profile_tabs.setCurrentIndex(index)
+            app.processEvents()
+            minimum_sizes[index] = editor.size()
+        dialog.resize(1380, 1050)
+        for index, editor in editors:
+            dialog.profile_tabs.setCurrentIndex(index)
+            app.processEvents()
+            self.assertGreater(editor.width(), minimum_sizes[index].width())
+            self.assertGreater(editor.height(), minimum_sizes[index].height())
+        dialog.close()
+        dialog.deleteLater()
+
+    def test_audio_confirmation_labels_and_scope(self):
+        app = QApplication.instance() or QApplication([])
+        for language in ("en", "de"):
+            with self.subTest(language=language):
+                dialog = SettingsDialog(AppConfig(ui_language=language))
+                expected = "Audio-Bestätigung (alle Profile)" if language == "de" else "Audio confirmation (all profiles)"
+                self.assertEqual(dialog.audio_confirmation_heading.text(), expected)
+                for checkbox in dialog._announce_checks.values():
+                    self.assertNotIn("Announce:", checkbox.text())
+                    self.assertNotIn("Ansage:", checkbox.text())
+                    self.assertEqual(checkbox.toolTip(), dialog.audio_confirmation_heading.toolTip())
+                self.assertTrue(dialog.audio_confirmation_heading.toolTip())
+                dialog.deleteLater()
+
+    def test_game_status_is_separate_from_indented_event_log(self):
+        from voxcomm.gamelog import GameFacts
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig(enabled_tools={"__global__": ["star_citizen_log"]}))
+        dialog._game_log = Mock(facts=GameFacts(game_version="4.10.2", ship="C1"))
+        dialog._game_log.take_events.return_value = [NAV_TARGET_SET]
+        dialog._refresh_game_log()
+        self.assertIn("4.10.2", dialog.game_status_view.text())
+        self.assertIn("C1", dialog.game_status_view.text())
+        self.assertNotIn("4.10.2", dialog.game_log_view.toPlainText())
+        self.assertIn("Nav target selected", dialog.game_log_view.toPlainText())
+        self.assertEqual(dialog.game_log_section.form.labelForField(dialog.game_log_view).text(), "Star Citizen Log:")
+        dialog.deleteLater()
+
+    def test_game_log_unfiltered_shows_recent_lines_and_restores_events(self):
+        from voxcomm.gamelog import GameLogTracker
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "Game.log"
+            path.write_text("".join(f"raw line {number}\n" for number in range(10010)), encoding="utf-8")
+            executable = f"Z:{Path(root).as_posix()}/Bin64/StarCitizen.exe"
+            dialog = SettingsDialog(AppConfig(enabled_tools={"__global__": ["star_citizen_log"]}))
+            dialog._game_log_timer.stop()
+            dialog._game_log = GameLogTracker(executable_finder=lambda: executable)
+            self.assertFalse(dialog.game_log_unfiltered.isChecked())
+            dialog._refresh_game_log()
+            self.assertEqual(dialog.game_log_view.toPlainText(), "")
+            dialog.game_log_unfiltered.setChecked(True)
+            self._wait_for_raw_game_log(app, dialog)
+            lines = dialog.game_log_view.toPlainText().splitlines()
+            self.assertEqual(len(lines), 10000)
+            self.assertEqual((lines[0], lines[-1]), ("raw line 10", "raw line 10009"))
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write("new raw line\nSuccessfully calculated route to ArcCorp fuel estimate 42.0\n")
+            dialog._refresh_game_log()
+            self._wait_for_raw_game_log(app, dialog)
+            lines = dialog.game_log_view.toPlainText().splitlines()
+            self.assertEqual(len(lines), 10000)
+            self.assertEqual(lines[0], "raw line 12")
+            self.assertIn("new raw line", lines)
+            path.write_text("new session\n", encoding="utf-8")
+            dialog._refresh_game_log()
+            self._wait_for_raw_game_log(app, dialog)
+            self.assertEqual(dialog.game_log_view.toPlainText(), "new session")
+            dialog.game_log_unfiltered.setChecked(False)
+            self.assertIn("Nav target selected", dialog.game_log_view.toPlainText())
+            self.assertNotIn("new raw line", dialog.game_log_view.toPlainText())
+            dialog.deleteLater()
+
+    def _wait_for_raw_game_log(self, app, dialog):
+        for _ in range(200):
+            app.processEvents()
+            if not dialog._raw_log_busy:
+                return
+            QTest.qWait(10)
+        self.fail("Raw game log read did not finish")
+
+    def test_game_log_discards_raw_read_when_permission_is_revoked(self):
+        from voxcomm.gamelog import GameLogTracker
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "Game.log"
+            path.write_text("private line\n", encoding="utf-8")
+            executable = f"Z:{Path(root).as_posix()}/Bin64/StarCitizen.exe"
+            dialog = SettingsDialog(AppConfig(enabled_tools={"__global__": ["star_citizen_log"]}))
+            dialog._game_log_timer.stop()
+            dialog._game_log = GameLogTracker(executable_finder=lambda: executable)
+            started = threading.Event()
+            release = threading.Event()
+
+            def read_lines(_reader):
+                started.set()
+                release.wait(2)
+                return True, ["private line"]
+
+            with patch("voxcomm.app.RecentLogReader.read_new_lines", autospec=True, side_effect=read_lines):
+                try:
+                    dialog.game_log_unfiltered.setChecked(True)
+                    self.assertTrue(started.wait(1))
+                    dialog.star_citizen.setChecked(False)
+                finally:
+                    release.set()
+                self._wait_for_raw_game_log(app, dialog)
+            self.assertEqual(dialog.game_log_view.toPlainText(), "")
+            dialog.deleteLater()
+
+    def test_general_settings_fit_minimum_for_all_ui_languages_and_providers(self):
+        app = QApplication.instance() or QApplication([])
+        for language in ("en", "de"):
+            for provider in ("ollama", "ollama-cloud", "llama.cpp"):
+                with self.subTest(language=language, provider=provider):
+                    dialog = SettingsDialog(AppConfig(ui_language=language, llm_provider=provider))
+                    dialog._lookup_thinking = lambda: None
+                    dialog.resize(dialog.minimumSize())
+                    dialog.show()
+                    app.processEvents()
+                    scroll = dialog.settings_tabs.widget(0)
+                    self.assertEqual(scroll.horizontalScrollBar().maximum(), 0)
+                    self.assertEqual(scroll.verticalScrollBar().maximum(), 0)
+                    if provider == "ollama-cloud":
+                        self.assertTrue(dialog.llm_section.form.isRowVisible(dialog.key_row))
+                    dialog.close()
+                    dialog.deleteLater()
+
+    def test_profile_buttons_preserve_profile_data_through_rename(self):
+        app = QApplication.instance() or QApplication([])
+        config = AppConfig()
+        dialog = SettingsDialog(config)
+        dialog.settings_tabs.setCurrentIndex(1)
+        with patch("voxcomm.app.QInputDialog.getText", return_value=("Work", True)):
+            dialog.add_profile.click()
+        self.assertEqual(dialog.special_profile.currentData(), "Work")
+        dialog.special_prompt.setPlainText("Work instructions")
+        dialog.profile_model.setCurrentText("work-model")
+        dialog.profile_tabs.setCurrentIndex(1)
+        dialog.web_search.setChecked(True)
+        dialog.input_control.setChecked(True)
+        dialog.profile_tabs.setCurrentIndex(2)
+        catalog = "Open => open => Button1 => {EN} Open"
+        dialog.input_action_catalog.setPlainText(catalog)
+        with patch("voxcomm.app.QInputDialog.getText", return_value=("Office", True)):
+            dialog.rename_profile.click()
+        updated = dialog.apply(config)
+        self.assertEqual(updated.special_prompts, {"Office": "Work instructions"})
+        self.assertEqual(updated.profile_models, {"Office": "work-model"})
+        self.assertEqual(updated.enabled_tools, {"Office": ["web_search", "input_control"]})
+        self.assertEqual(updated.input_action_catalogs, {"Office": catalog})
+        self.assertEqual(updated.active_special_prompt, "Office")
+        dialog.deleteLater()
+
+    def test_settings_action_reuses_the_existing_dialog(self):
         app = QApplication.instance() or QApplication([])
         with patch("voxcomm.app.PttListener"):
             overlay = Overlay()
             with patch("voxcomm.app.SettingsDialog") as dialog_class:
-                dialog_class.return_value.exec.return_value = 0
+                overlay._settings()
                 overlay._settings()
 
-            dialog_class.assert_called_once_with(overlay.config)
+            dialog_class.assert_called_once_with(overlay.config, reset_position_callback=overlay.reset_overlay_position)
+            self.assertEqual(dialog_class.return_value.show.call_count, 2)
+            self.assertEqual(dialog_class.return_value.raise_.call_count, 2)
             overlay.listener.stop()
             overlay.tray_icon.hide()
             overlay.deleteLater()
+
+    def test_overlay_position_can_be_reset_from_tray_settings(self):
+        app = QApplication.instance() or QApplication([])
+        with (patch("voxcomm.app.load_config", return_value=AppConfig(tray_mode=True, overlay_x=400, overlay_y=300)),
+              patch("voxcomm.app.PttListener"),
+              patch("voxcomm.app.QSystemTrayIcon.isSystemTrayAvailable", return_value=True),
+              patch("voxcomm.app.save_overlay_position") as save_position):
+            overlay = Overlay()
+            overlay._settings()
+            dialog = overlay._settings_dialog
+            self.assertTrue(dialog.reset_position.isEnabled())
+            dialog.reset_position.click()
+            save_position.assert_called_once_with(overlay.x(), overlay.y())
+            self.assertEqual((overlay.config.overlay_x, overlay.config.overlay_y), (overlay.x(), overlay.y()))
+            dialog.close()
+            overlay.listener.stop()
+            overlay.tray_icon.hide()
+            overlay.deleteLater()
+
+    def test_auto_read_is_independent_per_profile(self):
+        app = QApplication.instance() or QApplication([])
+        config = AppConfig(auto_speak=True, special_prompts={"Work": ""})
+        dialog = SettingsDialog(config)
+        self.assertTrue(dialog.auto_speak.isChecked())
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Work"))
+        self.assertTrue(dialog.auto_speak.isChecked())
+        dialog.auto_speak.setChecked(False)
+        with patch("voxcomm.app.QInputDialog.getText", return_value=("Office", True)):
+            dialog._rename_special_profile()
+        updated = dialog.apply(config)
+        self.assertEqual(updated.profile_auto_speak, {"__global__": True, "Office": False})
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("__global__"))
+        self.assertTrue(dialog.auto_speak.isChecked())
+        dialog.deleteLater()
+
+    def test_saving_settings_keeps_the_dialog_open(self):
+        app = QApplication.instance() or QApplication([])
+        with patch("voxcomm.app.PttListener"):
+            with patch("voxcomm.app.save_config"):
+                overlay = Overlay()
+                overlay._settings()
+                dialog = overlay._settings_dialog
+                dialog.auto_speak.setChecked(True)
+                dialog.findChild(QPushButton, "primary").click()
+
+                self.assertTrue(dialog.isVisible())
+                self.assertTrue(overlay.config.auto_speak)
+                self.assertIs(overlay._settings_dialog, dialog)
+
+                dialog.close()
+                overlay.listener.stop()
+                overlay.tray_icon.hide()
+                overlay.deleteLater()
 
     def test_app_starts_and_stops_only_its_own_gamepad_daemon(self):
         from voxcomm.app import Overlay
@@ -962,7 +1519,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
         config = AppConfig(special_prompts={"Star Citizen": "Ship context"})
         dialog = SettingsDialog(config)
 
-        self.assertEqual(dialog.special_profile.itemText(0), "Global")
+        self.assertEqual(dialog.special_profile.itemText(0), "Default")
         dialog.web_search.setChecked(True)
         dialog.special_prompt.setPlainText("Editable global instructions")
         dialog.auto_speak.setChecked(True)
@@ -996,6 +1553,27 @@ class ApplicationLifecycleTests(unittest.TestCase):
         self.assertEqual(updated.enabled_tools, {
             "__global__": ["web_search"],
             "Star Citizen": ["web_search"],
+        })
+
+    def test_star_citizen_log_permission_keeps_legacy_key_and_is_profile_scoped(self):
+        app = QApplication.instance() or QApplication([])
+        config = AppConfig(special_prompts={"Star Citizen": "Ship context"},
+                           enabled_tools={"__global__": ["star_citizen"]})
+        dialog = SettingsDialog(config)
+
+        self.assertEqual(dialog.star_citizen.text(), "Star Citizen Log")
+        self.assertTrue(dialog.star_citizen.isChecked())
+        self.assertTrue(dialog.star_citizen_uex.isChecked())
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Star Citizen"))
+        self.assertFalse(dialog.star_citizen.isChecked())
+        self.assertFalse(dialog.star_citizen_uex.isChecked())
+        dialog.star_citizen.setChecked(True)
+
+        updated = dialog.apply(config)
+
+        self.assertEqual(updated.enabled_tools, {
+            "__global__": ["star_citizen"],
+            "Star Citizen": ["star_citizen_log"],
         })
 
     def test_mangohud_status_includes_spoken_text_and_ai_reply(self):
@@ -1130,7 +1708,89 @@ class ApplicationLifecycleTests(unittest.TestCase):
             "__global__": "de_DE-global",
             "Star Citizen": "de_DE-thorsten-high",
         })
-        self.assertEqual(updated.profile_response_languages, {"Work": "English"})
+        self.assertEqual(updated.profile_output_languages["Work"], "English")
+
+    def test_language_settings_migrate_switch_and_follow_profile_rename(self):
+        app = QApplication.instance() or QApplication([])
+        config = AppConfig(stt_language="fr", tts_language="French", voice_language="fr",
+                           special_prompts={"Work": ""})
+        dialog = SettingsDialog(config)
+        self.assertTrue(dialog.profile_settings_section.isAncestorOf(dialog.stt_language))
+        self.assertTrue(dialog.profile_settings_section.isAncestorOf(dialog.profile_response_language))
+        self.assertFalse(hasattr(dialog, "tts_language"))
+        self.assertFalse(hasattr(dialog, "voice_language"))
+        dialog.stt_language.setCurrentIndex(dialog.stt_language.findData("en"))
+        dialog.profile_response_language.setCurrentIndex(dialog.profile_response_language.findData("English"))
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Work"))
+        self.assertEqual((dialog.stt_language.currentData(), dialog.profile_response_language.currentData()),
+                 ("fr", "French"))
+        dialog.stt_language.setCurrentIndex(dialog.stt_language.findData("auto"))
+        dialog.profile_response_language.setCurrentIndex(dialog.profile_response_language.findData("German"))
+        with patch("voxcomm.app.QInputDialog.getText", return_value=("Office", True)):
+            dialog._rename_special_profile()
+        updated = dialog.apply(config)
+        self.assertEqual(updated.profile_stt_languages, {"__global__": "en", "Office": "auto"})
+        self.assertEqual(updated.profile_tts_languages, {"__global__": "French", "Office": "French"})
+        self.assertEqual(updated.profile_voice_languages, {"__global__": "fr", "Office": "fr"})
+        self.assertEqual(updated.profile_output_languages, {"__global__": "English", "Office": "German"})
+        self.assertEqual((updated.stt_language, updated.tts_language, updated.voice_language),
+                         ("en", "French", "fr"))
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("__global__"))
+        self.assertEqual((dialog.stt_language.currentData(), dialog.profile_response_language.currentData()),
+                 ("en", "English"))
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Office"))
+        with patch("voxcomm.app.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+            dialog._remove_special_profile()
+        updated = dialog.apply(config)
+        self.assertNotIn("Office", updated.profile_stt_languages)
+        self.assertNotIn("Office", updated.profile_tts_languages)
+        self.assertNotIn("Office", updated.profile_voice_languages)
+        dialog.deleteLater()
+
+    def test_new_profile_languages_use_independent_defaults(self):
+        app = QApplication.instance() or QApplication([])
+        config = AppConfig(stt_language="fr", tts_language="French", voice_language="fr")
+        dialog = SettingsDialog(config)
+        with patch("voxcomm.app.QInputDialog.getText", return_value=("Work", True)):
+            dialog._add_special_profile()
+        self.assertEqual((dialog.stt_language.currentData(), dialog.profile_response_language.currentData()),
+                 ("de", "English"))
+        updated = dialog.apply(config)
+        self.assertEqual(updated.profile_stt_languages["Work"], "de")
+        self.assertEqual(updated.profile_tts_languages["Work"], "")
+        self.assertEqual(updated.profile_voice_languages["Work"], "")
+        dialog.deleteLater()
+
+    def test_voice_language_filter_follows_the_selected_profile(self):
+        app = QApplication.instance() or QApplication([])
+        config = AppConfig(special_prompts={"Work": ""},
+                   profile_output_languages={"__global__": "German", "Work": "English"},
+                           profile_voices={"__global__": "de_DE-thorsten", "Work": "en_US-amy"})
+        dialog = SettingsDialog(config)
+        dialog._available_voices = ["de_DE-thorsten", "en_US-amy"]
+        dialog._refresh_voice_options()
+        self.assertEqual(dialog.profile_voice.currentText(), "de_DE-thorsten")
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Work"))
+        self.assertEqual(dialog.profile_response_language.currentData(), "English")
+        self.assertEqual(dialog.profile_voice.currentText(), "en_US-amy")
+        self.assertEqual([dialog.profile_voice.itemText(index) for index in range(dialog.profile_voice.count())],
+                         ["en_US-amy"])
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("__global__"))
+        self.assertEqual(dialog.profile_voice.currentText(), "de_DE-thorsten")
+        dialog.profile_response_language.setCurrentIndex(dialog.profile_response_language.findData("English"))
+        self.assertEqual([dialog.profile_voice.itemText(index) for index in range(dialog.profile_voice.count())],
+                 ["en_US-amy"])
+        dialog.deleteLater()
+
+    def test_legacy_output_language_alias_filters_piper_voices(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig(profile_response_languages={"__global__": "Deutsch"}))
+        dialog._available_voices = ["de_DE-thorsten", "en_US-amy"]
+        dialog._refresh_voice_options()
+        self.assertEqual(dialog.profile_response_language.currentData(), "Deutsch")
+        self.assertEqual([dialog.profile_voice.itemText(index) for index in range(dialog.profile_voice.count())],
+                         ["de_DE-thorsten"])
+        dialog.deleteLater()
 
     def test_profile_voice_is_used_for_speech_output_without_global_fallback(self):
         app = QApplication.instance() or QApplication([])
@@ -1148,6 +1808,38 @@ class ApplicationLifecycleTests(unittest.TestCase):
 
 
 class ProviderSelectionTests(unittest.TestCase):
+    def test_api_keys_are_optional_masked_and_saved_per_server(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig())
+        for field in (dialog.api_key, dialog.stt_api_key, dialog.tts_api_key):
+            self.assertEqual(field.echoMode(), QLineEdit.EchoMode.Password)
+        self.assertFalse(dialog.stt_api_key.isEnabled())
+        self.assertFalse(dialog.tts_api_key.isEnabled())
+        dialog.stt_provider.setCurrentIndex(dialog.stt_provider.findData("whisper.cpp"))
+        dialog.tts_provider.setCurrentIndex(dialog.tts_provider.findData("openai"))
+        self.assertTrue(dialog.stt_api_key.isEnabled())
+        self.assertTrue(dialog.tts_api_key.isEnabled())
+        dialog.api_key.setText(" llm ")
+        dialog.stt_api_key.setText(" stt ")
+        dialog.tts_api_key.setText(" tts ")
+        config = dialog.apply(AppConfig())
+        self.assertEqual((config.ollama_api_key, config.stt_api_key, config.tts_api_key), ("llm", "stt", "tts"))
+        dialog.deleteLater()
+
+    def test_discovery_uses_the_matching_server_key(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig(tts_provider="openai", ollama_api_key="llm-key", tts_api_key="tts-key"))
+        with (patch("voxcomm.app.threading.Thread") as thread,
+              patch("voxcomm.app.list_models", return_value=[]) as models,
+              patch("voxcomm.app.openai_tts.list_voices", return_value=[]) as voices):
+            dialog._discover("models")
+            thread.call_args.kwargs["target"]()
+            models.assert_called_once_with("ollama", dialog.llm_url.text(), "llm-key")
+            dialog._discover("voices")
+            thread.call_args.kwargs["target"]()
+            voices.assert_called_once_with(dialog.tts.text(), "tts-key")
+        dialog.deleteLater()
+
     def test_cloud_provider_shows_api_key_row_and_swaps_url(self):
         app = QApplication.instance() or QApplication([])
         dialog = SettingsDialog(AppConfig(llm_provider="ollama-cloud", ollama_api_key="k",
@@ -1161,7 +1853,8 @@ class ProviderSelectionTests(unittest.TestCase):
 
         dialog.provider.setCurrentIndex(dialog.provider.findData("ollama"))
 
-        self.assertFalse(dialog.llm_section.form.isRowVisible(dialog.key_row))
+        self.assertTrue(dialog.llm_section.form.isRowVisible(dialog.key_row))
+        self.assertTrue(dialog.key_test.isHidden())
         self.assertEqual(dialog.llm_url.text(), "http://127.0.0.1:11434")
 
     def test_cloud_models_are_loaded_from_cache_without_http(self):
@@ -1193,7 +1886,7 @@ class ProviderSelectionTests(unittest.TestCase):
         dialog = SettingsDialog(AppConfig(profile_voices={"__global__": "de_DE-thorsten-low"}))
         dialog.stt_provider.setCurrentIndex(dialog.stt_provider.findData("whisper.cpp"))
         dialog.tts_provider.setCurrentIndex(dialog.tts_provider.findData("openai"))
-        dialog.tts_language.setCurrentIndex(dialog.tts_language.findData("English"))
+        dialog.profile_response_language.setCurrentIndex(dialog.profile_response_language.findData("English"))
         dialog.provider.setCurrentIndex(dialog.provider.findData("ollama-cloud"))
         dialog.api_key.setText(" secret ")
         dialog.profile_voice.setCurrentText("data")
@@ -1202,10 +1895,10 @@ class ProviderSelectionTests(unittest.TestCase):
 
         self.assertEqual(updated.stt_provider, "whisper.cpp")
         self.assertEqual(updated.tts_provider, "openai")
-        self.assertEqual(updated.tts_language, "English")
+        self.assertEqual(updated.profile_output_languages["__global__"], "English")
         self.assertEqual(updated.ollama_api_key, "secret")
         self.assertEqual(updated.llm_provider, "ollama-cloud")
-        self.assertEqual(dialog.response_language.text(), "English")
+        self.assertEqual(dialog.profile_response_language.currentData(), "English")
 
     def test_openai_interface_hides_voice_language_and_swaps_url(self):
         app = QApplication.instance() or QApplication([])
@@ -1214,12 +1907,12 @@ class ProviderSelectionTests(unittest.TestCase):
         dialog.tts_provider.setCurrentIndex(dialog.tts_provider.findData("openai"))
 
         self.assertEqual(dialog.tts.text(), "http://127.0.0.1:8097")
-        self.assertFalse(dialog.tts_section.form.isRowVisible(dialog.voice_language))
+        self.assertFalse(hasattr(dialog, "voice_language"))
 
         dialog.tts_provider.setCurrentIndex(dialog.tts_provider.findData("wyoming"))
 
         self.assertEqual(dialog.tts.text(), "tcp://127.0.0.1:10200")
-        self.assertTrue(dialog.tts_section.form.isRowVisible(dialog.voice_language))
+        self.assertFalse(hasattr(dialog, "voice_language"))
 
     def test_profile_response_language_does_not_fall_back_to_global_tts_language(self):
         app = QApplication.instance() or QApplication([])
@@ -1229,10 +1922,10 @@ class ProviderSelectionTests(unittest.TestCase):
             profile_voices={"__global__": "data"},
         ))
 
-        self.assertEqual(dialog.response_language.text(), "English")
+        self.assertEqual(dialog.profile_response_language.currentData(), "German")
         dialog.profile_response_language.setCurrentIndex(
             dialog.profile_response_language.findData("French"))
-        self.assertEqual(dialog.response_language.text(), "French")
+        self.assertEqual(dialog.profile_response_language.currentData(), "French")
 
         dialog.deleteLater()
 
@@ -1284,7 +1977,7 @@ class ProviderSelectionTests(unittest.TestCase):
             with patch("voxcomm.app.threading.Thread"):
                 dialog = SettingsDialog(AppConfig(tts_provider="openai", llm_provider="ollama"))
         dialog._available_voices = ["data"]
-        dialog.voice_language.setCurrentIndex(dialog.voice_language.findData("de"))
+        dialog.profile_response_language.setCurrentIndex(dialog.profile_response_language.findData("German"))
 
         dialog._refresh_voice_options()
 

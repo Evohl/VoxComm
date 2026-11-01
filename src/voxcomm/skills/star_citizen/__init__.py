@@ -1,0 +1,1 @@
+"""Star Citizen skill and its game-specific integrations."""

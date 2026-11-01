@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import httpx
 
+from voxcomm.providers.auth import bearer_headers
 
 TTS_TIMEOUT_SECONDS = 180
 
@@ -43,8 +44,9 @@ def _names(payload: object) -> list[str]:
     return []
 
 
-def list_voices(url: str) -> list[str]:
-    response = httpx.get(voices_url(url), timeout=20)
+def list_voices(url: str, api_key: str = "") -> list[str]:
+    response = httpx.get(voices_url(url), timeout=20,
+                         **({"headers": bearer_headers(api_key)} if api_key.strip() else {}))
     response.raise_for_status()
     return sorted({name for name in _names(response.json())}, key=str.casefold)
 
@@ -74,14 +76,15 @@ def _wav_header(buffer: bytes) -> tuple[int, int] | None:
     return None
 
 
-def speak_stream(text: str, url: str, voice: str = "", language: str = ""):
+def speak_stream(text: str, url: str, voice: str = "", language: str = "", api_key: str = ""):
     """Liefert (PCM, Samplerate)-Chunks, sobald der Server WAV-Daten sendet."""
     if not text.strip():
         return
     payload = {"input": text, "voice": voice, "response_format": "wav"}
     if language.strip():
         payload["language"] = language
-    with httpx.stream("POST", speech_url(url), json=payload, timeout=TTS_TIMEOUT_SECONDS) as response:
+    with httpx.stream("POST", speech_url(url), json=payload, timeout=TTS_TIMEOUT_SECONDS,
+                      **({"headers": bearer_headers(api_key)} if api_key.strip() else {})) as response:
         if response.status_code >= 400:
             response.read()
             raise RuntimeError(f"TTS HTTP {response.status_code}: {response.text[:300]}")

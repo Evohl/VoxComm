@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import errno
+import fcntl
 import json
 import math
 import os
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -148,23 +150,46 @@ def press_gamepad_button(button: object, delay: float = 0, hold: bool = False) -
 
 
 def _serve() -> None:
+    path = socket_path()
+    lock_path = path.with_suffix(".lock")
+    with os.fdopen(os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600), "a") as lock_file:
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError("VoxComm virtual controller is already running") from error
+        _serve_locked(path)
+
+
+def _serve_locked(path: Path) -> None:
     device = VirtualGamepad()
     stopping = threading.Event()
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    path = socket_path()
+    bound_identity = None
     try:
         try:
             server.bind(str(path))
         except OSError as error:
             if error.errno != errno.EADDRINUSE:
                 raise
+            existing_stat = path.lstat()
+            if not stat.S_ISSOCK(existing_stat.st_mode):
+                raise RuntimeError("Virtual controller socket path is not a socket") from error
             try:
                 _send_command({"command": "status"})
-            except OSError:
-                path.unlink(missing_ok=True)
+            except (ConnectionRefusedError, FileNotFoundError):
+                try:
+                    current_stat = path.lstat()
+                except FileNotFoundError:
+                    pass
+                else:
+                    if (current_stat.st_dev, current_stat.st_ino) != (existing_stat.st_dev, existing_stat.st_ino):
+                        raise RuntimeError("Virtual controller socket changed during startup") from error
+                    path.unlink()
                 server.bind(str(path))
             else:
                 raise RuntimeError("VoxComm virtual controller is already running") from error
+        bound_stat = path.lstat()
+        bound_identity = (bound_stat.st_dev, bound_stat.st_ino)
         path.chmod(0o600)
         server.listen(4)
         server.settimeout(0.25)
@@ -206,7 +231,13 @@ def _serve() -> None:
     finally:
         server.close()
         device.close()
-        path.unlink(missing_ok=True)
+        if bound_identity is not None:
+            try:
+                current_stat = path.lstat()
+                if (current_stat.st_dev, current_stat.st_ino) == bound_identity:
+                    path.unlink(missing_ok=True)
+            except FileNotFoundError:
+                pass
 
 
 def start() -> str:

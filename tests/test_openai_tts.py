@@ -28,6 +28,12 @@ class UrlTests(unittest.TestCase):
 
 class VoiceListTests(unittest.TestCase):
     @patch("voxcomm.providers.openai_tts.httpx.get")
+    def test_optional_api_key_is_sent_for_voice_discovery(self, get):
+        get.return_value.json.return_value = {"voices": []}
+        openai_tts.list_voices("http://example.test", " secret ")
+        self.assertEqual(get.call_args.kwargs["headers"], {"Authorization": "Bearer secret"})
+
+    @patch("voxcomm.providers.openai_tts.httpx.get")
     def test_qwentts_voice_shape_is_parsed(self, get):
         response = Mock()
         response.json.return_value = {"voices": [{"name": "data", "kind": "speaker"}]}
@@ -85,6 +91,12 @@ def _split(data: bytes, size: int) -> list[bytes]:
 
 
 class SpeechTests(unittest.TestCase):
+    @patch("voxcomm.providers.openai_tts.httpx.stream")
+    def test_optional_api_key_is_sent_for_speech(self, stream):
+        stream.return_value = FakeResponse([_wav_bytes(b"\0\0")])
+        list(openai_tts.speak_stream("Hello", "http://example.test", api_key=" secret "))
+        self.assertEqual(stream.call_args.kwargs["headers"], {"Authorization": "Bearer secret"})
+
     def test_blank_text_is_not_sent(self):
         with patch("voxcomm.providers.openai_tts.httpx.stream") as stream:
             self.assertEqual(list(openai_tts.speak_stream("   ", "http://127.0.0.1:8097")), [])

@@ -5,6 +5,7 @@ import wave
 
 import httpx
 
+from voxcomm.providers.auth import bearer_headers
 
 STT_TIMEOUT_SECONDS = 180
 
@@ -16,7 +17,7 @@ def inference_url(base_url: str) -> str:
     return f"{base}/inference"
 
 
-def transcribe(audio: bytes, url: str, sample_rate: int = 16000, language: str = "de") -> str:
+def transcribe(audio: bytes, url: str, sample_rate: int = 16000, language: str = "de", api_key: str = "") -> str:
     if not audio:
         return ""
     buffer = io.BytesIO()
@@ -32,6 +33,7 @@ def transcribe(audio: bytes, url: str, sample_rate: int = 16000, language: str =
         inference_url(url),
         files={"file": ("audio.wav", buffer.getvalue(), "audio/wav")},
         data=data,
+        **({"headers": bearer_headers(api_key)} if api_key.strip() else {}),
         timeout=STT_TIMEOUT_SECONDS,
     )
     if response.status_code >= 400:

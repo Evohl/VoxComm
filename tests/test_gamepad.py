@@ -1,10 +1,14 @@
+import fcntl
+import socket
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from evdev import ecodes
 
 from voxcomm.gamepad import (
-    BUTTON_CODES, BUTTON_COUNT, DEVICE_NAME, HOLD_SECONDS, VirtualGamepad, normalize_button, press_gamepad_button,
+    BUTTON_CODES, BUTTON_COUNT, DEVICE_NAME, HOLD_SECONDS, VirtualGamepad, _serve, normalize_button, press_gamepad_button,
 )
 
 
@@ -85,6 +89,95 @@ class GamepadTests(unittest.TestCase):
         for delay in (-1, 3601, float("nan"), float("inf"), True, "2"):
             with self.subTest(delay=delay), self.assertRaises(ValueError):
                 press_gamepad_button("Button1", delay=delay)
+
+    def test_second_daemon_preserves_running_daemon_socket(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "gamepad.sock"
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as existing:
+                existing.bind(str(path))
+                existing.listen()
+                with patch("voxcomm.gamepad.socket_path", return_value=path), \
+                     patch("voxcomm.gamepad.VirtualGamepad") as device, \
+                     patch("voxcomm.gamepad._send_command", return_value={"running": True}):
+                    with self.assertRaisesRegex(RuntimeError, "already running"):
+                        _serve()
+
+                self.assertTrue(path.exists())
+                device.return_value.close.assert_called_once_with()
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                    client.connect(str(path))
+                    connection, _address = existing.accept()
+                    connection.close()
+
+    def test_stale_socket_is_replaced_and_owned_socket_cleaned_up(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "gamepad.sock"
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stale:
+                stale.bind(str(path))
+            with patch("voxcomm.gamepad.socket_path", return_value=path), \
+                 patch("voxcomm.gamepad.VirtualGamepad") as device, \
+                 patch("voxcomm.gamepad._send_command", side_effect=ConnectionRefusedError), \
+                 patch("signal.signal", side_effect=RuntimeError("stop test")):
+                with self.assertRaisesRegex(RuntimeError, "stop test"):
+                    _serve()
+
+            self.assertFalse(path.exists())
+            device.return_value.close.assert_called_once_with()
+
+    def test_existing_start_lock_prevents_a_second_device(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "gamepad.sock"
+            with path.with_suffix(".lock").open("w") as lock_file:
+                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with patch("voxcomm.gamepad.socket_path", return_value=path), \
+                     patch("voxcomm.gamepad.VirtualGamepad") as device:
+                    with self.assertRaisesRegex(RuntimeError, "already running"):
+                        _serve()
+                device.assert_not_called()
+
+    def test_unresponsive_socket_is_not_assumed_stale(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "gamepad.sock"
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as existing:
+                existing.bind(str(path))
+                existing.listen()
+                with patch("voxcomm.gamepad.socket_path", return_value=path), \
+                     patch("voxcomm.gamepad.VirtualGamepad") as device, \
+                     patch("voxcomm.gamepad._send_command", side_effect=TimeoutError):
+                    with self.assertRaises(TimeoutError):
+                        _serve()
+                self.assertTrue(path.exists())
+                device.return_value.close.assert_called_once_with()
+
+    def test_cleanup_preserves_replaced_socket_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "gamepad.sock"
+
+            def replace_socket(*_args):
+                path.unlink()
+                path.write_text("replacement")
+                raise RuntimeError("stop test")
+
+            with patch("voxcomm.gamepad.socket_path", return_value=path), \
+                 patch("voxcomm.gamepad.VirtualGamepad") as device, \
+                 patch("signal.signal", side_effect=replace_socket):
+                with self.assertRaisesRegex(RuntimeError, "stop test"):
+                    _serve()
+
+            self.assertEqual(path.read_text(), "replacement")
+            device.return_value.close.assert_called_once_with()
+
+    def test_existing_regular_file_is_not_removed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "gamepad.sock"
+            path.write_text("keep")
+            with patch("voxcomm.gamepad.socket_path", return_value=path), \
+                 patch("voxcomm.gamepad.VirtualGamepad") as device:
+                with self.assertRaisesRegex(RuntimeError, "not a socket"):
+                    _serve()
+
+            self.assertEqual(path.read_text(), "keep")
+            device.return_value.close.assert_called_once_with()
 
 
 if __name__ == "__main__":

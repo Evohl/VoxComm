@@ -1,0 +1,1 @@
+"""Optional assistant skills."""

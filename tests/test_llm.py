@@ -36,6 +36,14 @@ def _ndjson(*chunks):
 
 class StreamingTests(unittest.TestCase):
     @patch("voxcomm.providers.llm.httpx.stream")
+    def test_streaming_uses_optional_key_for_local_providers(self, stream):
+        for provider in ("ollama", "llama.cpp"):
+            with self.subTest(provider=provider):
+                stream.return_value = FakeStreamResponse([])
+                _request_stream(provider, "http://example.test", "model", [], api_key=" secret ")
+                self.assertEqual(stream.call_args.kwargs["headers"], {"Authorization": "Bearer secret"})
+
+    @patch("voxcomm.providers.llm.httpx.stream")
     def test_ollama_stream_reports_each_delta_and_returns_joined_message(self, stream):
         stream.return_value = FakeStreamResponse(_ndjson({"content": "Hal"}, {"content": "lo"}, {"content": ""}))
         deltas = []
@@ -117,6 +125,32 @@ class StreamingTests(unittest.TestCase):
         stream.assert_not_called()
 
     @patch("voxcomm.providers.llm.httpx.post")
+    @patch("voxcomm.providers.llm.query_uex", return_value={"status": "ok", "matches": [{"name": "Levski"}]})
+    def test_star_citizen_profile_permission_offers_and_runs_uex_tool(self, uex, post):
+        call = {"function": {"name": "star_citizen", "arguments": {
+            "operation": "terminals", "query": "Levski"}}}
+        post.side_effect = [
+            Mock(json=Mock(return_value={"message": {"content": "", "tool_calls": [call]}})),
+            Mock(json=Mock(return_value={"message": {"content": "UEX lists Levski as a terminal."}})),
+        ]
+
+        answer = chat("ollama", "http://h:11434", "m", "Where is Levski?", enabled_tools=["star_citizen"])
+
+        self.assertEqual(answer, "UEX lists Levski as a terminal.")
+        offered = post.call_args_list[0].kwargs["json"]["tools"]
+        self.assertEqual([tool["function"]["name"] for tool in offered], ["star_citizen"])
+        self.assertIn("commodities_prices", post.call_args_list[0].kwargs["json"]["messages"][0]["content"])
+        uex.assert_called_once_with("terminals", "Levski", "")
+
+    @patch("voxcomm.providers.llm.httpx.post")
+    def test_star_citizen_tool_is_not_offered_when_profile_permission_is_off(self, post):
+        post.return_value = Mock(json=Mock(return_value={"message": {"content": "No tool available."}}))
+
+        chat("ollama", "http://h:11434", "m", "Find Levski")
+
+        self.assertNotIn("tools", post.call_args.kwargs["json"])
+
+    @patch("voxcomm.providers.llm.httpx.post")
     @patch("voxcomm.providers.llm.search_web", return_value=[])
     def test_chat_reports_prompt_and_automatic_web_search_activity(self, search, post):
         post.return_value = Mock(json=Mock(return_value={"message": {"content": "Erledigt"}}))
@@ -128,6 +162,47 @@ class StreamingTests(unittest.TestCase):
         self.assertTrue(statuses[0].startswith("Web search: Wie ist das Wetter "))
         self.assertEqual(statuses[1], "Waiting for model response …")
         search.assert_called_once()
+
+    @patch("voxcomm.providers.llm.httpx.post")
+    @patch("voxcomm.providers.llm.search_web", return_value=[])
+    def test_general_fresh_question_still_searches_in_star_citizen_profile(self, search, post):
+        post.return_value = Mock(json=Mock(return_value={"message": {"content": "Rain is expected."}}))
+
+        chat(
+            "ollama", "http://h:11434", "m", "What is the weather today?",
+            enabled_tools=["star_citizen", "web_search"],
+        )
+
+        search.assert_called_once()
+
+    @patch("voxcomm.providers.llm.httpx.post")
+    @patch("voxcomm.providers.llm.search_web", return_value=[])
+    def test_star_citizen_price_question_uses_uex_policy_not_automatic_web_search(self, search, post):
+        post.return_value = Mock(json=Mock(return_value={"message": {"content": "UEX has no current result."}}))
+
+        chat(
+            "ollama", "http://h:11434", "m", "What is the current price of Gold in Levski?",
+            enabled_tools=["star_citizen", "web_search"],
+        )
+
+        search.assert_not_called()
+        tool_names = [tool["function"]["name"] for tool in post.call_args.kwargs["json"]["tools"]]
+        self.assertEqual(tool_names, ["star_citizen"])
+        system_prompt = post.call_args.kwargs["json"]["messages"][0]["content"]
+        self.assertIn("Answer precise questions directly and compactly", system_prompt)
+        self.assertIn("check the supplied Game.log client version and build", system_prompt)
+        self.assertIn("use UEX to verify the canonical named place and star system", system_prompt)
+        self.assertNotIn("Levski is in Nyx", system_prompt)
+
+    @patch("voxcomm.providers.llm.httpx.post")
+    def test_star_citizen_policy_is_absent_without_profile_permission(self, post):
+        post.return_value = Mock(json=Mock(return_value={"message": {"content": "Hello."}}))
+
+        chat("ollama", "http://h:11434", "m", "Hello")
+
+        system_prompt = post.call_args.kwargs["json"]["messages"][0]["content"]
+        self.assertNotIn("STAR CITIZEN PROFILE POLICY", system_prompt)
+        self.assertNotIn("UEX API 2.0", system_prompt)
 
     @patch("voxcomm.providers.llm.press_gamepad_button", return_value="Button3")
     @patch("voxcomm.providers.llm.httpx.stream")
@@ -360,8 +435,8 @@ class ModelDiscoveryTests(unittest.TestCase):
             {"content": "OK, Landing Gear toggled."},
         ]
 
-        answer = chat("ollama", "http://localhost:11434", "model", "Can you toggle landing gear?",
-                      enabled_tools=["input_control"],
+        answer = chat("ollama", "http://localhost:11434", "model", "toggle landing gear",
+                  enabled_tools=["input_control"], controller_mode="llm",
                       input_actions=(
                           "Landing Gear On => landing gear on => Button12 => {EN} Landing gear on\n"
                           "Landing Gear Off => landing gear off => Button13 => {EN} Landing gear off"
@@ -445,6 +520,56 @@ class ModelDiscoveryTests(unittest.TestCase):
 
         press.assert_not_called()
         request.assert_called_once()
+
+    def test_questions_and_negations_block_controller_in_all_modes(self):
+        catalog = "Lights On => lights|scheinwerfer + on|an => Button64 => {EN} Lights on"
+        call = {"function": {"name": "input_control", "arguments": {"action": "Lights On"}}}
+        for mode, keyword, prompt in (
+            ("hybrid", "assistent", "Wie schalte ich Scheinwerfer an?"),
+            ("hybrid", "assistent", "Assistent wie schalte ich Scheinwerfer an"),
+            ("script", "assistent", "Assistent wie schalte ich Scheinwerfer an"),
+            ("llm", "", "What do lights on mean?"),
+            ("script", "", "Scheinwerfer nicht an"),
+            ("hybrid", "assistent", "Assistent Scheinwerfer nicht an"),
+            ("llm", "", "don't turn lights on"),
+        ):
+            with self.subTest(mode=mode, prompt=prompt):
+                with (patch("voxcomm.providers.llm.press_gamepad_button") as press,
+                      patch("voxcomm.providers.llm.thinking_options", return_value=[]),
+                      patch("voxcomm.providers.llm._request", side_effect=[
+                          {"tool_calls": [call]}, {"content": "No action taken"},
+                      ])):
+                    chat("ollama", "http://localhost:11434", "model", prompt,
+                         enabled_tools=["input_control", "web_search"], input_actions=catalog,
+                         controller_mode=mode, llm_keyword=keyword)
+                    press.assert_not_called()
+
+    def test_controller_action_is_not_sent_if_cancelled_before_model_tool_dispatch(self):
+        cancelled = threading.Event()
+        call = {"function": {"name": "input_control", "arguments": {"action": "Lights On"}}}
+
+        def on_status(status):
+            if status.startswith("Controller action"):
+                cancelled.set()
+
+        with (patch("voxcomm.providers.llm.press_gamepad_button") as press,
+              patch("voxcomm.providers.llm.thinking_options", return_value=[]),
+              patch("voxcomm.providers.llm._request_stream", return_value={"tool_calls": [call]})):
+            answer = chat("ollama", "http://localhost:11434", "model", "lights on",
+                          enabled_tools=["input_control"], controller_mode="llm", cancel_event=cancelled,
+                          on_status=on_status, input_actions="Lights On => lights + on => Button64 => {EN} Lights on")
+        self.assertEqual(answer, "")
+        press.assert_not_called()
+
+    def test_cancelling_first_script_action_prevents_later_actions(self):
+        cancelled = threading.Event()
+        with patch("voxcomm.providers.llm.press_gamepad_button", side_effect=lambda *args, **kwargs: cancelled.set()) as press:
+            answer = chat("ollama", "http://localhost:11434", "model", "power on and gear down",
+                          enabled_tools=["input_control"], controller_mode="script", cancel_event=cancelled,
+                          input_actions="Power On => power + on => Button1 => {EN} Power on\n"
+                                        "Gear Down => gear + down => Button2 => {EN} Gear down")
+        self.assertEqual(answer, "")
+        press.assert_called_once_with("Button1", hold=False)
 
     @patch("voxcomm.providers.llm.press_gamepad_button", return_value="Button1")
     @patch("voxcomm.providers.llm._request")
@@ -643,8 +768,8 @@ class ModelDiscoveryTests(unittest.TestCase):
     }]})
     def test_legacy_keyboard_arguments_do_not_trigger_controller_input(self, request, press):
         chat(
-            "ollama", "http://localhost:11434", "model", "Perform the requested action?",
-            enabled_tools=["input_control"],
+            "ollama", "http://localhost:11434", "model", "Perform the requested action",
+            enabled_tools=["input_control"], controller_mode="llm",
             input_actions=(
                 "Power On => power on => Button5 => {EN} powered on\n"
                 "Power Off => power off => Button6 => {EN} powered off"
@@ -786,6 +911,18 @@ class ModelDiscoveryTests(unittest.TestCase):
 
 
 class OllamaCloudTests(unittest.TestCase):
+    def test_local_model_list_and_chat_use_optional_api_key(self):
+        for provider in ("ollama", "llama.cpp"):
+            with self.subTest(provider=provider), patch("voxcomm.providers.llm.httpx.get") as get:
+                get.return_value.json.return_value = {"models": [], "data": []}
+                list_models(provider, "http://example.test", " secret ")
+                self.assertEqual(get.call_args.kwargs["headers"], {"Authorization": "Bearer secret"})
+            with self.subTest(provider=provider), patch("voxcomm.providers.llm.httpx.post") as post:
+                post.return_value.json.return_value = {"message": {"content": "ok"},
+                                                       "choices": [{"message": {"content": "ok"}}]}
+                chat(provider, "http://example.test", "model", "hi", api_key=" secret ")
+                self.assertEqual(post.call_args.kwargs["headers"], {"Authorization": "Bearer secret"})
+
     @patch("voxcomm.providers.llm.list_cloud_models", return_value=["b", "a"])
     def test_cloud_model_list_uses_cloud_client(self, listing):
         self.assertEqual(list_models("ollama-cloud", "https://ollama.com"), ["a", "b"])

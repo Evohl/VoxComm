@@ -8,6 +8,7 @@ from voxcomm.action_catalog import (
     reply_language_tag,
     resolve_utterance,
     unmet_requirement,
+    merge_catalog_reply_overrides,
 )
 
 SAMPLE = (
@@ -92,6 +93,24 @@ class ActionCatalogParseTests(unittest.TestCase):
 
 
 class ReplyOverrideTests(unittest.TestCase):
+    def test_existing_overrides_migrate_to_editable_catalog(self):
+        catalog = "# Comment\nGear => gear => Button1 => {EN} Original | {DE} Original\n"
+        migrated, keys = merge_catalog_reply_overrides(catalog, {
+            ("Gear", "EN"): r"Open | close \ now", ("Gear", "ES"): "Abierto", ("Missing", "DE"): "Unused"})
+        self.assertEqual(keys, {("Gear", "EN"), ("Gear", "ES")})
+        self.assertTrue(migrated.startswith("# Comment\n"))
+        self.assertEqual(parse_action_catalog(migrated)[0]["replies"],
+                         {"EN": r"Open | close \ now", "DE": "Original", "ES": "Abierto"})
+
+    def test_invalid_catalog_keeps_legacy_overrides_unchanged(self):
+        catalog = "broken catalog"
+        self.assertEqual(merge_catalog_reply_overrides(catalog, {("A", "DE"): "B"}), (catalog, set()))
+
+    def test_conflicting_aliases_and_unrepresentable_override_are_retained(self):
+        catalog = "Gear => gear => Button1 => {EN} Original"
+        overrides = {("Gear", "CS"): "First", ("Gear", "CZ"): "Second", ("Gear", "EN"): "A => B"}
+        self.assertEqual(merge_catalog_reply_overrides(catalog, overrides), (catalog, set()))
+
     def test_custom_reply_replaces_only_matching_action_and_language(self):
         actions = parse_action_catalog(
             "Gear On => gear => Button1 => {DE} Fahrwerk an. | {EN} Gear on.\n"
@@ -167,6 +186,14 @@ class ActionCatalogResolveTests(unittest.TestCase):
         self.assertEqual(resolve_utterance(self.actions, "Kannst du das Fahrwerk ausfahren?").status, "question")
         self.assertEqual(resolve_utterance(self.actions, "Wie fahre ich das Fahrwerk aus").status, "question")
 
+    def test_negated_actions_are_never_resolved(self):
+        for prompt in ("Fahrwerk nicht ausfahren", "don't deploy landing gear",
+                       "do not deploy landing gear", "Fahrwerk ausfahren und Hangar nicht kontaktieren"):
+            with self.subTest(prompt=prompt):
+                result = resolve_utterance(self.actions, prompt)
+                self.assertEqual(result.status, "negated")
+                self.assertEqual(result.actions, ())
+
     def test_unrelated_request_has_no_match(self):
         self.assertEqual(resolve_utterance(self.actions, "Perform the requested action").status, "none")
 
@@ -180,7 +207,27 @@ class ActionCatalogResolveTests(unittest.TestCase):
     def test_reply_language_tags(self):
         self.assertEqual(reply_language_tag("German"), "DE")
         self.assertEqual(reply_language_tag("english"), "EN")
-        self.assertEqual(reply_language_tag("Spanish"), "")
+        self.assertEqual(reply_language_tag("Spanish"), "ES")
+        self.assertEqual(reply_language_tag("French"), "FR")
+        self.assertEqual(reply_language_tag("Czech"), "CS")
+        self.assertEqual(reply_language_tag("cz"), "CS")
+
+    def test_french_reply_is_selected_from_catalog(self):
+        action = parse_action_catalog("Lights On => lights => Button1 => {EN} Lights on | {FR} Lumières allumées")[0]
+        self.assertEqual(action_reply(action, "French"), "Lumières allumées")
+
+    def test_all_configured_languages_and_czech_alias(self):
+        from voxcomm.prompts import VOICE_LANGUAGE_NAMES
+
+        for code, language in VOICE_LANGUAGE_NAMES.items():
+            with self.subTest(language=language):
+                action = parse_action_catalog(f"Action => action => Button1 => {{{code.upper()}}} answer")[0]
+                self.assertEqual(reply_language_tag(language), code.upper())
+                self.assertEqual(action["replies"][code.upper()], "answer")
+        action = parse_action_catalog("Action => action => Button1 => {CZ} Zapnuto")[0]
+        self.assertEqual(action_reply(action, "Czech"), "Zapnuto")
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            parse_action_catalog("Action => action => Button1 => {CZ} A | {CS} B")
 
 
 PRECONDITION_CATALOG = (

@@ -20,6 +20,12 @@ class InferenceUrlTests(unittest.TestCase):
 
 
 class TranscribeTests(unittest.TestCase):
+    @patch("voxcomm.providers.whisper_cpp.httpx.post")
+    def test_optional_api_key_is_sent_as_bearer(self, post):
+        post.return_value = Mock(status_code=200, headers={"content-type": "text/plain"}, text="ok")
+        whisper_cpp.transcribe(b"\0\0", "http://example.test", api_key=" secret ")
+        self.assertEqual(post.call_args.kwargs["headers"], {"Authorization": "Bearer secret"})
+
     def test_empty_audio_is_not_sent(self):
         with patch("voxcomm.providers.whisper_cpp.httpx.post") as post:
             self.assertEqual(whisper_cpp.transcribe(b"", "http://127.0.0.1:8081"), "")

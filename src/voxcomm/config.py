@@ -16,9 +16,11 @@ class AppConfig:
     ui_language: str = "en"
     stt_url: str = "tcp://127.0.0.1:10300"
     stt_provider: str = "wyoming"
+    stt_api_key: str = ""
     stt_language: str = "de"
     tts_url: str = "tcp://127.0.0.1:10200"
     tts_provider: str = "wyoming"
+    tts_api_key: str = ""
     tts_language: str = ""
     auto_speak: bool = False
     global_prompt: str = DEFAULT_GLOBAL_PROMPT
@@ -28,6 +30,11 @@ class AppConfig:
     profile_voices: dict[str, str] = field(default_factory=dict)
     profile_thinking: dict[str, str] = field(default_factory=dict)
     profile_response_languages: dict[str, str] = field(default_factory=dict)
+    profile_stt_languages: dict[str, str] = field(default_factory=dict)
+    profile_tts_languages: dict[str, str] = field(default_factory=dict)
+    profile_voice_languages: dict[str, str] = field(default_factory=dict)
+    profile_auto_speak: dict[str, bool] = field(default_factory=dict)
+    profile_output_languages: dict[str, str] = field(default_factory=dict)
     special_hotkeys: dict[str, str] = field(default_factory=dict)
     enabled_tools: dict[str, list[str]] = field(default_factory=dict)
     input_action_catalogs: dict[str, str] = field(default_factory=dict)
@@ -122,6 +129,30 @@ def load_config(path: Path | None = None) -> AppConfig:
     return config
 
 
+def _toml_string(value: str) -> str:
+    encoded = json.dumps(value, ensure_ascii=False)
+    result = []
+    for character in encoded:
+        codepoint = ord(character)
+        if 0xD800 <= codepoint <= 0xDFFF:
+            raise ValueError("TOML strings cannot contain Unicode surrogates")
+        if codepoint > 0xFFFF:
+            result.append(f"\\U{codepoint:08x}")
+        elif codepoint >= 0x7F:
+            result.append(f"\\u{codepoint:04x}")
+        else:
+            result.append(character)
+    return "".join(result)
+
+
+def _toml_table_value(value: str | list[str] | bool) -> str:
+    if isinstance(value, str):
+        return _toml_string(value)
+    if isinstance(value, bool):
+        return str(value).lower()
+    return "[" + ", ".join(_toml_string(item) for item in value) + "]"
+
+
 def save_config(config: AppConfig, path: Path | None = None) -> None:
     target = path or config_path()
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -132,8 +163,10 @@ def save_config(config: AppConfig, path: Path | None = None) -> None:
     input_action_catalogs = values.pop("input_action_catalogs")
     reply_overrides = values.pop("input_reply_overrides")
     profile_tables = tuple((name, values.pop(name)) for name in (
-        "profile_models", "profile_voices", "profile_thinking", "profile_response_languages"))
-    rows = [f"{key} = {json.dumps(value, ensure_ascii=True)}" if isinstance(value, str)
+        "profile_models", "profile_voices", "profile_thinking", "profile_response_languages",
+        "profile_stt_languages", "profile_tts_languages", "profile_voice_languages", "profile_auto_speak",
+        "profile_output_languages"))
+    rows = [f"{key} = {_toml_string(value)}" if isinstance(value, str)
             else f"{key} = {str(value).lower() if isinstance(value, bool) else value}"
             for key, value in values.items() if value is not None]
     for table, entries in (("special_prompts", prompts), ("special_hotkeys", hotkeys),
@@ -141,7 +174,7 @@ def save_config(config: AppConfig, path: Path | None = None) -> None:
                            ("input_reply_overrides", reply_overrides), *profile_tables):
         if entries:
             rows.extend(["", f"[{table}]"])
-            rows.extend(f"{json.dumps(name, ensure_ascii=True)} = {json.dumps(value, ensure_ascii=True)}"
+            rows.extend(f"{_toml_string(name)} = {_toml_table_value(value)}"
                         for name, value in entries.items())
     if target.exists():
         backup = target.with_name(target.name + ".bak")

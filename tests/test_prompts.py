@@ -103,12 +103,10 @@ class PromptTests(unittest.TestCase):
             persona_file = Path(directory) / "persona.txt"
 
             initial = load_persona(persona_file)
-            self.assertIn("Mobiglas", initial)
-            self.assertIn("Pyro-Schlag", initial)
-            self.assertIn("Streaming-SOC", initial)
-            self.assertIn("Reiseaufwand", initial)
-            self.assertIn("Inventory-Location", initial)
-            self.assertIn("nenne den Schiffsnamen aus den Statusdaten", initial)
+            self.assertIn("moeglichst kompakt", initial)
+            self.assertNotIn("Star Citizen", initial)
+            self.assertNotIn("UEX", initial)
+            self.assertNotIn("Levski", initial)
             self.assertTrue(persona_file.exists())
 
             persona_file.write_text("Custom editable persona", encoding="utf-8")

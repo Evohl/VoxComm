@@ -89,6 +89,8 @@ class PttListener:
         self.on_change = on_change
         self._pressed = threading.Event()
         self._profile = ""
+        self._pressed_device = None
+        self._pressed_code = None
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self._keyboard = None
@@ -184,26 +186,39 @@ class PttListener:
                                 continue
                             profile = codes.get((event.code, device.name.lower()), codes.get((event.code, None)))
                             if profile is not None:
-                                self._set(bool(event.value), profile)
+                                self._set(bool(event.value), profile, device, event.code)
                     except OSError:
                         selector.unregister(device)
                         device.close()
-            if not self._stop.is_set():
-                self.on_change("error", tr("Input device for the PTT binding was disconnected"))
+                        if not self._stop.is_set():
+                            was_pressed = self._pressed.is_set() and self._pressed_device is device
+                            if was_pressed:
+                                profile = self._profile
+                                self._pressed.clear()
+                                self._pressed_device = None
+                                self._pressed_code = None
+                                self.on_change("cancelled", profile)
+                            if was_pressed or not selector.get_map():
+                                self.on_change("error", tr("Input device for the PTT binding was disconnected"))
         finally:
             for key in list(selector.get_map().values()):
                 key.fileobj.close()
             selector.close()
 
-    def _set(self, pressed: bool, profile: str = "") -> None:
+    def _set(self, pressed: bool, profile: str = "", device=None, code=None) -> None:
         if pressed:
             if self._pressed.is_set():
                 return
             self._profile = profile
+            self._pressed_device = device
+            self._pressed_code = code
             self._pressed.set()
             self.on_change("pressed", profile)
-        elif self._pressed.is_set() and profile == self._profile:
+        elif (self._pressed.is_set() and profile == self._profile
+              and device is self._pressed_device and code == self._pressed_code):
             self._pressed.clear()
+            self._pressed_device = None
+            self._pressed_code = None
             self.on_change("released", profile)
 
     def stop(self) -> None:
