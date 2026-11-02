@@ -9,7 +9,7 @@ from collections import deque
 from datetime import datetime
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QPropertyAnimation, QRect, QSize, QTimer, Signal, Qt
-from PySide6.QtGui import QAction, QFont, QGuiApplication, QTextCharFormat
+from PySide6.QtGui import QAction, QFont, QGuiApplication, QIcon, QPalette, QTextCharFormat
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFormLayout, QFrame, QGraphicsOpacityEffect, QGridLayout,
     QHBoxLayout, QLabel, QInputDialog, QLineEdit, QMainWindow, QMenu, QMessageBox,
@@ -41,7 +41,7 @@ from voxcomm.skills.star_citizen.tool import (
     STAR_CITIZEN_LEGACY, STAR_CITIZEN_LOG, STAR_CITIZEN_UEX, allows_game_log, allows_uex,
 )
 from voxcomm.streaming import SentenceStream
-from voxcomm.theme import dialog_stylesheet, make_icon, mix_colors, rgba, system_accent, system_surface, system_text
+from voxcomm.theme import make_icon, mix_colors, rgba, system_accent, system_surface, system_text
 
 
 LANGUAGE_LABELS = VOICE_LANGUAGE_NAMES
@@ -59,7 +59,6 @@ SPEAKING_STATUS = "Speaking …"
 WHISPER_CPP_DEFAULT_URL = "http://127.0.0.1:8081"
 OPENAI_TTS_DEFAULT_URL = "http://127.0.0.1:8097"
 SETTINGS_LABEL_WIDTH = 140
-SETTINGS_ICON_BUTTON = 33
 MANUAL_CONTROLLER_BUTTON_COUNT = 100
 THINKING_LABELS = {"off": "Off", "on": "On", "low": "Low", "medium": "Medium", "high": "High"}
 USER_PREFIX = "You: "
@@ -141,7 +140,6 @@ class HotkeyField(QWidget):
             self.clear_button = QToolButton()
             self.clear_button.setObjectName("iconButton")
             self.clear_button.setText("✕")
-            self.clear_button.setFixedSize(SETTINGS_ICON_BUTTON, SETTINGS_ICON_BUTTON)
             self.clear_button.setToolTip(tr("Remove hotkey"))
             self.clear_button.clicked.connect(lambda: self._apply(""))
             layout.addWidget(self.clear_button)
@@ -264,7 +262,6 @@ class SettingsDialog(QDialog):
         self.ui_language.setCurrentIndex(max(self.ui_language.findData(config.ui_language), 0))
         self.setWindowTitle(tr("Settings · {name}", name=APP_NAME))
         self.setMinimumSize(1040, 720)
-        self.setStyleSheet(dialog_stylesheet(system_accent(), system_surface(), system_text()))
         self.discovery = Events()
         self.discovery.discovery.connect(self._discovery_result)
         self.discovery.thinking.connect(self._apply_thinking_options)
@@ -355,7 +352,6 @@ class SettingsDialog(QDialog):
         self.manual_delay.setRange(0, 10)
         self.manual_delay.setSuffix(tr(" s"))
         self.manual_delay.setFixedWidth(88)
-        self.manual_delay.setFixedHeight(30)
         self.manual_delay.setToolTip(tr("Delay before pressing, to switch to the game"))
         self.manual_cancel = QPushButton(tr("Cancel pending press"))
         self.manual_cancel.setAutoDefault(False)
@@ -392,7 +388,7 @@ class SettingsDialog(QDialog):
         self._manual_pending = None
         self._manual_busy = False
         self.input_control.toggled.connect(lambda enabled: None if enabled else self._cancel_manual_button())
-        self.action_catalog_section = self._section(tr("VoxComm Controller"), [
+        self.action_catalog_section = self._section(None, [
             (tr("Mode (all profiles)"), self.controller_mode),
             (tr("LLM keyword (all profiles)"), self.controller_llm_keyword),
             (None, self.manual_controller_toggle), (None, self.manual_controller_panel),
@@ -441,7 +437,7 @@ class SettingsDialog(QDialog):
         self.audio_confirmation_heading = QLabel(tr("Audio confirmation (all profiles)"))
         self.audio_confirmation_heading.setToolTip(announcement_scope)
         self.game_log_section = self._section(
-            tr("Star Citizen log"),
+            None,
             [(None, self.audio_confirmation_heading)]
             + announcement_rows + [(tr("Game status"), self.game_status_view),
                                    (None, self.game_log_unfiltered),
@@ -546,12 +542,10 @@ class SettingsDialog(QDialog):
         self.sample_rate.setRange(8000, 48000)
         self.sample_rate.setSingleStep(8000)
         self.sample_rate.setValue(config.sample_rate)
-        self.sample_rate.setFixedHeight(30)
         self.overlay_hide_seconds = QSpinBox()
         self.overlay_hide_seconds.setRange(1, 120)
         self.overlay_hide_seconds.setSuffix(" s")
         self.overlay_hide_seconds.setValue(config.overlay_hide_seconds)
-        self.overlay_hide_seconds.setFixedHeight(30)
         self.tray_mode = QCheckBox(tr("Tray mode"))
         self.tray_mode.setToolTip(tr("Tray mode: click to start/stop recording; hide overlay buttons"))
         self.tray_mode.setChecked(config.tray_mode)
@@ -567,7 +561,7 @@ class SettingsDialog(QDialog):
         global_layout.setSpacing(14)
         left = QVBoxLayout()
         left.setSpacing(14)
-        left.addWidget(self._section(tr("Input"), [
+        left.addWidget(self._section(tr("Application"), [
             (tr("Interface language"), self.ui_language),
             (tr("Microphone sample rate"), self.sample_rate),
             (tr("Overlay display duration"), self.overlay_hide_seconds),
@@ -598,9 +592,10 @@ class SettingsDialog(QDialog):
         global_layout.addLayout(columns, 1)
         profile_tab = QWidget()
         profile_layout = QVBoxLayout(profile_tab)
-        profile_layout.setContentsMargins(0, 0, 0, 0)
+        profile_layout.setContentsMargins(12, 12, 12, 0)
         profile_layout.setSpacing(12)
         profile_header = QHBoxLayout()
+        profile_header.setContentsMargins(0, 0, 0, 0)
         profile_header.setSpacing(8)
         profile_header.addWidget(QLabel(tr("Profile")))
         profile_header.addWidget(self.special_profile, 1)
@@ -610,7 +605,7 @@ class SettingsDialog(QDialog):
         profile_details = QWidget()
         details_layout = QVBoxLayout(profile_details)
         details_layout.setContentsMargins(0, 0, 0, 0)
-        self.profile_settings_section = self._section(tr("Profile settings"), [
+        self.profile_settings_section = self._section(None, [
             (tr("Profile hotkey"), self.profile_hotkey),
             (tr("Model"), profile_model_row),
             (tr("Input language"), self.stt_language),
@@ -625,7 +620,7 @@ class SettingsDialog(QDialog):
         tools_page = QWidget()
         tools_layout = QVBoxLayout(tools_page)
         tools_layout.setContentsMargins(0, 0, 0, 0)
-        tools_layout.addWidget(self._section(tr("Skills and tools"), [
+        tools_layout.addWidget(self._section(None, [
             (None, self.web_search), (None, self.input_control), (None, self.star_citizen),
             (None, self.star_citizen_uex),
         ]))
@@ -652,9 +647,10 @@ class SettingsDialog(QDialog):
         profile_layout.addWidget(self.profile_tabs, 1)
         self.settings_tabs = QTabWidget()
         self.settings_tabs.addTab(self._scroll_page(global_tab), tr("General settings"))
-        self.settings_tabs.addTab(profile_tab, tr("Profiles"))
-        title = QLabel(tr("Settings"))
-        title.setObjectName("dialogTitle")
+        profile_index = self.settings_tabs.addTab(profile_tab, tr("Profiles"))
+        self.settings_tabs.currentChanged.connect(
+            lambda index: self.settings_tabs.setDocumentMode(index == profile_index)
+        )
         self.discovery_status = QLabel(tr("Load voices and models from the service using the refresh button"))
         self.discovery_status.setObjectName("hint")
         self.discovery_status.setWordWrap(True)
@@ -675,43 +671,44 @@ class SettingsDialog(QDialog):
         save.setMinimumWidth(130)
         save.clicked.connect(self._request_save)
         footer = QHBoxLayout()
+        footer.setContentsMargins(12, 12, 12, 10)
         footer.addWidget(self.discovery_status, 1)
         footer.addWidget(save)
         root = QVBoxLayout(self)
-        root.setContentsMargins(20, 18, 20, 18)
-        root.setSpacing(14)
-        root.addWidget(title)
+        root.setContentsMargins(0, 12, 0, 0)
+        root.setSpacing(0)
         root.addWidget(self.settings_tabs, 1)
         root.addLayout(footer)
 
     def _scroll_page(self, page: QWidget) -> QScrollArea:
         scroll = QScrollArea()
-        scroll.setObjectName("settingsScroll")
-        scroll.viewport().setObjectName("settingsViewport")
-        page.setObjectName("settingsPage")
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidget(page)
+        scroll.viewport().setAutoFillBackground(False)
+        page.setAutoFillBackground(False)
         return scroll
 
     def _refresh_button(self, tooltip: str) -> QToolButton:
         button = QToolButton()
         button.setObjectName("iconButton")
-        button.setIcon(make_icon("refresh", system_accent()))
-        button.setIconSize(QSize(18, 18))
-        button.setFixedSize(SETTINGS_ICON_BUTTON, SETTINGS_ICON_BUTTON)
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        icon = QIcon.fromTheme("view-refresh")
+        button.setIcon(icon if not icon.isNull() else make_icon("refresh", button.palette().buttonText().color()))
         button.setToolTip(tooltip)
         return button
 
-    def _section(self, title: str, rows: list) -> QFrame:
+    def _section(self, title: str | None, rows: list) -> QFrame:
         frame = QFrame()
         frame.setObjectName("section")
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(16, 14, 16, 16)
         layout.setSpacing(10)
-        heading = QLabel(title.upper())
-        heading.setObjectName("sectionTitle")
-        layout.addWidget(heading)
+        if title:
+            heading = QLabel(title.upper())
+            heading.setObjectName("sectionTitle")
+            self._set_heading_accent(heading)
+            layout.addWidget(heading)
         form = QFormLayout()
         form.setHorizontalSpacing(14)
         form.setVerticalSpacing(10)
@@ -728,6 +725,20 @@ class SettingsDialog(QDialog):
         layout.addLayout(form)
         frame.form = form
         return frame
+
+    @staticmethod
+    def _set_heading_accent(heading: QLabel) -> None:
+        palette = heading.palette()
+        accent = system_accent()
+        for group in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive):
+            palette.setColor(group, QPalette.ColorRole.WindowText, accent)
+        heading.setPalette(palette)
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in (QEvent.Type.ApplicationPaletteChange, QEvent.Type.ThemeChange):
+            for heading in self.findChildren(QLabel, "sectionTitle"):
+                self._set_heading_accent(heading)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -1499,6 +1510,8 @@ class Overlay(QMainWindow):
         self.status.setToolTip(tr("Drag to move"))
         self.transcript = _OverlayTranscript()
         self.transcript.setReadOnly(True)
+        self.transcript.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.transcript.setAutoFillBackground(False)
         self.transcript.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.transcript.document().setDocumentMargin(0)
         transcript_font = QFont()
@@ -1508,6 +1521,8 @@ class Overlay(QMainWindow):
         transcript_font.setPointSize(11)
         self.transcript.setFont(transcript_font)
         self.transcript.setFixedSize(TRANSCRIPT_WIDTH, 0)
+        self.transcript.viewport().setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.transcript.viewport().setAutoFillBackground(False)
         self.transcript.viewport().setCursor(Qt.CursorShape.SizeAllCursor)
         text_column = QVBoxLayout()
         text_column.setContentsMargins(0, 0, 0, 0)
@@ -1597,7 +1612,6 @@ class Overlay(QMainWindow):
 
     def _init_tray(self):
         self.tray_menu = QMenu(self)
-        self.tray_menu.setStyleSheet(dialog_stylesheet(system_accent(), system_surface(), system_text()))
         self.tray_toggle_action = QAction(tr("Start recording"), self)
         self.tray_toggle_action.triggered.connect(self._toggle_tray_recording)
         self.tray_menu.addAction(self.tray_toggle_action)
@@ -1704,6 +1718,7 @@ class Overlay(QMainWindow):
             QLabel#status {{ color: {accent.name()}; font-weight: 600; }}
             QTextEdit {{ color: {text.name()}; background: transparent; border: none; padding: 0;
                          selection-background-color: {rgba(accent, 110)}; }}
+            QAbstractScrollArea::viewport {{ background: transparent; border: none; }}
             QScrollBar:vertical {{ background: transparent; width: 6px; margin: 0; }}
             QScrollBar::handle:vertical {{ background: {rgba(accent, 150)}; border-radius: 3px; min-height: 24px; }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
@@ -1723,6 +1738,12 @@ class Overlay(QMainWindow):
             "ai_label": self._text_format(accent, bold=True),
             "ai": self._text_format(mix_colors(accent, text, 0.82)),
         }
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if (event.type() in (QEvent.Type.ApplicationPaletteChange, QEvent.Type.PaletteChange, QEvent.Type.ThemeChange)
+                and hasattr(self, "_panel")):
+            self._apply_theme()
 
     @staticmethod
     def _text_format(color, bold: bool = False) -> QTextCharFormat:

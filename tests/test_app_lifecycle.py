@@ -7,12 +7,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from PySide6.QtCore import QAbstractAnimation, QPoint, QPointF, QTimer, Qt
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtCore import QAbstractAnimation, QEvent, QPoint, QPointF, QTimer, Qt
+from PySide6.QtGui import QColor, QGuiApplication, QIcon, QPalette
 from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFrame, QLabel, QLineEdit, QMessageBox, QPushButton, QSystemTrayIcon,
-    QToolButton, QWidget,
+    QTabWidget, QToolButton, QWidget,
 )
 
 from voxcomm.app import (
@@ -103,13 +103,19 @@ class ApplicationLifecycleTests(unittest.TestCase):
     def tearDown(self):
         self._config_patch.stop()
 
-    def test_settings_refresh_rows_have_spacing_and_numeric_controls_are_compact(self):
+    def test_settings_controls_use_native_style_and_editor_frames(self):
+        app = QApplication.instance() or QApplication([])
         dialog = SettingsDialog(AppConfig())
 
-        self.assertEqual(dialog.profile_model_refresh.width(), 33)
-        self.assertEqual(dialog.profile_voice_refresh.width(), 33)
-        self.assertEqual(dialog.sample_rate.height(), 30)
-        self.assertEqual(dialog.overlay_hide_seconds.height(), 30)
+        self.assertEqual(dialog.styleSheet(), "")
+        for widget in (dialog.profile_model, dialog.sample_rate, dialog.key_test, dialog.profile_model_refresh):
+            self.assertEqual(widget.style(), app.style())
+            self.assertEqual(widget.styleSheet(), "")
+        for editor in (dialog.special_prompt, dialog.input_action_catalog, dialog.game_log_view):
+            editor.ensurePolished()
+            self.assertNotEqual(editor.frameShape(), QFrame.Shape.NoFrame)
+            self.assertEqual(editor.style(), app.style())
+            self.assertEqual(editor.styleSheet(), "")
 
         dialog.deleteLater()
 
@@ -585,6 +591,9 @@ class ApplicationLifecycleTests(unittest.TestCase):
             self.assertTrue(panel.testAttribute(Qt.WidgetAttribute.WA_StyledBackground))
             self.assertIn(rgba(system_surface(), 170), panel.styleSheet())
             self.assertIn(system_accent().name(), panel.styleSheet())
+            self.assertFalse(overlay.transcript.viewport().autoFillBackground())
+            self.assertTrue(overlay.transcript.viewport().testAttribute(Qt.WidgetAttribute.WA_NoSystemBackground))
+            self.assertIn("QAbstractScrollArea::viewport", panel.styleSheet())
             for button in (overlay.mic, overlay.say, overlay.settings_button):
                 self.assertFalse(button.icon().isNull())
                 self.assertEqual(button.text(), "")
@@ -607,6 +616,20 @@ class ApplicationLifecycleTests(unittest.TestCase):
             self.assertEqual(overlay.width(), COMPACT_WIDTH)
             self.assertLessEqual(overlay.height(), 64)
             overlay.listener.stop()
+            overlay.deleteLater()
+
+    def test_overlay_reapplies_system_accent_after_theme_change(self):
+        app = QApplication.instance() or QApplication([])
+        accent = QColor("#29c5fe")
+        with patch("voxcomm.app.PttListener"), patch("voxcomm.app.system_accent", return_value=accent):
+            overlay = Overlay()
+            overlay.changeEvent(QEvent(QEvent.Type.ApplicationPaletteChange))
+
+            self.assertIn(accent.name(), overlay._panel.styleSheet())
+            self.assertEqual(overlay._transcript_formats["ai_label"].foreground().color(), accent)
+
+            overlay.listener.stop()
+            overlay.tray_icon.hide()
             overlay.deleteLater()
 
     def test_overlay_starts_compact_and_grows_with_output(self):
@@ -923,30 +946,65 @@ class ApplicationLifecycleTests(unittest.TestCase):
             overlay.listener.stop()
             overlay.deleteLater()
 
-    def test_settings_dialog_is_split_into_themed_sections(self):
+    def test_settings_dialog_is_split_into_sections(self):
         app = QApplication.instance() or QApplication([])
         dialog = SettingsDialog(AppConfig())
 
         titles = [label.text() for label in dialog.findChildren(QLabel, "sectionTitle")]
         self.assertEqual(
             sorted(titles),
-            sorted(["INPUT", "SPEECH RECOGNITION", "LANGUAGE MODEL", "SPEECH OUTPUT", "PROFILE SETTINGS", "SKILLS AND TOOLS", "STAR CITIZEN LOG", "VOXCOMM CONTROLLER"]),
+            sorted(["APPLICATION", "SPEECH RECOGNITION", "LANGUAGE MODEL", "SPEECH OUTPUT"]),
         )
+        for index in range(dialog.profile_tabs.count()):
+            self.assertEqual(dialog.profile_tabs.widget(index).findChildren(QLabel, "sectionTitle"), [])
+        self.assertTrue(dialog.audio_confirmation_heading.text())
         sections = dialog.findChildren(QFrame, "section")
         self.assertEqual(len(sections), 8)
         self.assertEqual(dialog.input_action_catalog.toPlainText(), "")
         self.assertTrue(dialog.action_catalog_section.isHidden())
-        self.assertIn(system_accent().name(), dialog.styleSheet())
+        self.assertEqual(dialog.style(), app.style())
         self.assertEqual(dialog.findChild(QPushButton, "primary").text(), "Save")
         for field in (dialog.stt, dialog.tts, dialog.llm_url, dialog.profile_hotkey, dialog.special_prompt):
             self.assertTrue(any(section.isAncestorOf(field) for section in sections))
+
+    def test_section_headings_follow_system_accent(self):
+        app = QApplication.instance() or QApplication([])
+        first_accent = QColor("#278754")
+        second_accent = QColor("#cd5148")
+        with patch("voxcomm.app.system_accent", return_value=first_accent) as accent:
+            dialog = SettingsDialog(AppConfig(ui_language="de"))
+            dialog._lookup_thinking = lambda: None
+            dialog.show()
+            app.processEvents()
+            headings = dialog.findChildren(QLabel, "sectionTitle")
+            self.assertIn("ANWENDUNG", [heading.text() for heading in headings])
+            self.assertTrue(headings)
+            for heading in headings:
+                self.assertEqual(heading.palette().color(QPalette.ColorGroup.Active, QPalette.ColorRole.WindowText), first_accent)
+                self.assertEqual(heading.styleSheet(), "")
+            application_heading = next(heading for heading in headings if heading.text() == "ANWENDUNG")
+            image = application_heading.grab().toImage()
+            self.assertTrue(any(
+                abs(color.red() - first_accent.red()) < 25
+                and abs(color.green() - first_accent.green()) < 25
+                and abs(color.blue() - first_accent.blue()) < 25
+                for x in range(image.width()) for y in range(image.height())
+                if (color := image.pixelColor(x, y)).alpha() > 0
+            ))
+            accent.return_value = second_accent
+            dialog.changeEvent(QEvent(QEvent.Type.ApplicationPaletteChange))
+            for heading in headings:
+                self.assertEqual(heading.palette().color(QPalette.ColorGroup.Active, QPalette.ColorRole.WindowText), second_accent)
+            self.assertEqual(dialog.styleSheet(), "")
+            dialog.close()
+            dialog.deleteLater()
 
     def test_settings_dialog_loads_the_configured_translation(self):
         app = QApplication.instance() or QApplication([])
         config = AppConfig(ui_language="de")
         dialog = SettingsDialog(config)
 
-        self.assertEqual(dialog.findChild(QLabel, "dialogTitle").text(), "Einstellungen")
+        self.assertTrue(dialog.windowTitle().startswith("Einstellungen"))
         self.assertEqual(dialog.web_search.text(), "Websuche erlauben")
         self.assertEqual([dialog.settings_tabs.tabText(index) for index in range(dialog.settings_tabs.count())],
                          ["Allgemeine Einstellungen", "Profile"])
@@ -1220,10 +1278,76 @@ class ApplicationLifecycleTests(unittest.TestCase):
         dialog.settings_tabs.setCurrentIndex(1)
         dialog.profile_tabs.setCurrentIndex(1)
         app.processEvents()
-        viewport = dialog.profile_tabs.currentWidget().viewport()
-        point = viewport.mapTo(dialog, QPoint(10, viewport.height() - 10))
-        image = dialog.grab().toImage()
-        self.assertEqual(image.pixelColor(point).name(), system_surface().name())
+        self.assertEqual(dialog.style(), app.style())
+        dialog.close()
+        dialog.deleteLater()
+
+    def test_settings_tabs_fill_dialog_without_redundant_title(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig())
+        dialog._lookup_thinking = lambda: None
+        dialog.show()
+        app.processEvents()
+
+        self.assertIsNone(dialog.findChild(QLabel, "dialogTitle"))
+        self.assertFalse(dialog.settings_tabs.documentMode())
+        self.assertFalse(dialog.profile_tabs.documentMode())
+        for scroll in (dialog.settings_tabs.widget(0), *(dialog.profile_tabs.widget(index)
+                                                       for index in range(dialog.profile_tabs.count()))):
+            self.assertFalse(scroll.viewport().autoFillBackground())
+            self.assertFalse(scroll.widget().autoFillBackground())
+        self.assertEqual(dialog.settings_tabs.geometry().left(), 0)
+        self.assertEqual(dialog.settings_tabs.geometry().top(), 12)
+        self.assertEqual(dialog.settings_tabs.width(), dialog.width())
+        self.assertTrue(dialog.windowTitle())
+        save = dialog.findChild(QPushButton, "primary")
+        self.assertIsNone(dialog.findChild(QFrame, "settingsFooterSeparator"))
+        self.assertGreaterEqual(save.geometry().top() - dialog.settings_tabs.geometry().bottom(), 12)
+        for section in dialog.findChildren(QFrame, "section"):
+            self.assertEqual(section.frameShape(), QFrame.Shape.NoFrame)
+        dialog.settings_tabs.setCurrentIndex(1)
+        app.processEvents()
+        self.assertTrue(dialog.settings_tabs.documentMode())
+        self.assertFalse(dialog.profile_tabs.documentMode())
+        profile_page = dialog.settings_tabs.currentWidget()
+        self.assertGreaterEqual(dialog.special_profile.mapTo(profile_page, QPoint(0, 0)).y(), 12)
+        profile_header = profile_page.layout().itemAt(0).layout()
+        profile_label = profile_header.itemAt(0).widget()
+        self.assertEqual(profile_label.mapTo(dialog, QPoint(0, 0)).x(),
+                 dialog.discovery_status.mapTo(dialog, QPoint(0, 0)).x())
+        self.assertEqual(dialog.remove_profile.mapTo(dialog, QPoint(dialog.remove_profile.width(), 0)).x(),
+                 save.mapTo(dialog, QPoint(save.width(), 0)).x())
+        self.assertEqual(dialog.profile_tabs.mapTo(dialog, QPoint(0, 0)).x(),
+             dialog.discovery_status.mapTo(dialog, QPoint(0, 0)).x())
+        self.assertEqual(dialog.profile_tabs.mapTo(dialog, QPoint(dialog.profile_tabs.width(), 0)).x(),
+             save.mapTo(dialog, QPoint(save.width(), 0)).x())
+        dialog.settings_tabs.setCurrentIndex(0)
+        self.assertFalse(dialog.settings_tabs.documentMode())
+        dialog.close()
+        dialog.deleteLater()
+
+    def test_settings_scroll_page_shows_native_tab_background(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig())
+        dialog._lookup_thinking = lambda: None
+        dialog.show()
+        dialog.settings_tabs.setCurrentIndex(1)
+        app.processEvents()
+        page = dialog.profile_tabs.currentWidget().widget()
+        page_point = page.mapTo(dialog, QPoint(5, 5))
+        page_color = dialog.grab().toImage().pixelColor(page_point)
+
+        reference = QTabWidget(dialog)
+        reference.setGeometry(0, 0, 300, 180)
+        reference_page = QWidget()
+        reference.addTab(reference_page, "Reference")
+        reference.show()
+        reference.raise_()
+        app.processEvents()
+        reference_point = reference_page.mapTo(dialog, QPoint(5, 5))
+        reference_color = dialog.grab().toImage().pixelColor(reference_point)
+
+        self.assertEqual(page_color, reference_color)
         dialog.close()
         dialog.deleteLater()
 
@@ -1507,12 +1631,57 @@ class ApplicationLifecycleTests(unittest.TestCase):
         app = QApplication.instance() or QApplication([])
         dialog = SettingsDialog(AppConfig())
 
+        self.assertEqual(dialog.styleSheet(), "")
         for button in (dialog.profile_voice_refresh, dialog.profile_model_refresh):
             self.assertIsInstance(button, QToolButton)
             self.assertFalse(button.icon().isNull())
             self.assertEqual(button.text(), "")
             self.assertIn("Load", button.toolTip())
-            self.assertEqual(button.width(), button.height())
+            self.assertEqual(button.styleSheet(), "")
+
+    def test_discovery_buttons_fall_back_when_theme_icon_is_missing(self):
+        app = QApplication.instance() or QApplication([])
+        with patch.object(QIcon, "fromTheme", return_value=QIcon()) as from_theme:
+            dialog = SettingsDialog(AppConfig())
+
+        self.assertEqual(from_theme.call_count, 2)
+        for button in (dialog.profile_voice_refresh, dialog.profile_model_refresh):
+            self.assertFalse(button.icon().isNull())
+            self.assertFalse(button.icon().pixmap(button.iconSize()).isNull())
+        dialog.deleteLater()
+
+    def test_discovery_button_renders_its_icon(self):
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig())
+        dialog._lookup_thinking = lambda: None
+        dialog.settings_tabs.setCurrentIndex(1)
+        dialog.show()
+        app.processEvents()
+        button = dialog.profile_model_refresh
+        with_icon = button.grab().toImage()
+        button.setIcon(QIcon())
+        app.processEvents()
+        without_icon = button.grab().toImage()
+
+        self.assertTrue(any(with_icon.pixel(x, y) != without_icon.pixel(x, y)
+                            for x in range(with_icon.width()) for y in range(with_icon.height())))
+        dialog.close()
+        dialog.deleteLater()
+
+    def test_settings_and_tray_use_native_style_with_overlay_parent(self):
+        app = QApplication.instance() or QApplication([])
+        with patch("voxcomm.app.PttListener"):
+            overlay = Overlay()
+            dialog = SettingsDialog(AppConfig(), overlay)
+
+            for widget in (dialog, dialog.profile_model, dialog.special_prompt, overlay.tray_menu):
+                self.assertEqual(widget.styleSheet(), "")
+                self.assertEqual(widget.style(), app.style())
+
+            dialog.deleteLater()
+            overlay.listener.stop()
+            overlay.tray_icon.hide()
+            overlay.deleteLater()
 
     def test_settings_save_global_prompt_and_auto_speak(self):
         app = QApplication.instance() or QApplication([])
