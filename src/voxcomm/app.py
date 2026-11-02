@@ -2072,7 +2072,9 @@ class Overlay(QMainWindow):
             self.hide()
 
     def _poll_game_log(self):
-        if not allows_game_log(self.config.enabled_tools.get(self._active_profile(), [])):
+        profile = next((name for name in (*sorted(self.config.special_prompts, key=str.casefold), "__global__")
+                        if allows_game_log(self.config.enabled_tools.get(name, []))), None)
+        if profile is None:
             return
         self._game_log.poll()
         events = [event for event in self._game_log.take_events()
@@ -2080,8 +2082,7 @@ class Overlay(QMainWindow):
         # Laufende Antworten nicht unterbrechen; Meldungen während der Ausgabe entfallen.
         if not events or self._speech_jobs:
             return
-        profile = self._active_profile()
-        voice = self._active_profile_voice()
+        voice = self.config.profile_voices.get(profile, "")
         tag = reply_language_tag(self._response_language_for_profile(profile, voice)) or "EN"
         ship = self._game_log.facts.ship
         text = " ".join(

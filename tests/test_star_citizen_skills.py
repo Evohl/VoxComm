@@ -242,14 +242,18 @@ def test_controller_web_and_uex_tool_selection_are_independent():
 
 
 @pytest.mark.parametrize("tools", [[], ["star_citizen_uex"], ["unknown_skill"]])
-def test_active_profile_without_log_never_polls_or_announces(tools):
+def test_selected_profile_without_log_does_not_block_permitted_default(tools):
     overlay = Mock()
     overlay.config = AppConfig(special_prompts={"Other": ""}, active_special_prompt="Other",
                                enabled_tools={"__global__": ["star_citizen_log"], "Other": tools})
-    overlay._active_profile.return_value = "Other"
+    overlay._game_log.take_events.return_value = [SHIP_ENTERED]
+    overlay._game_log.facts.ship = "Ship"
+    overlay._response_language_for_profile.return_value = "English"
+    overlay._speech_jobs = 0
     Overlay._poll_game_log(overlay)
-    overlay._game_log.poll.assert_not_called()
-    overlay._start_speak.assert_not_called()
+    overlay._game_log.poll.assert_called_once()
+    overlay._response_language_for_profile.assert_any_call("__global__", "")
+    overlay._start_speak.assert_called_once()
 
 
 @pytest.mark.parametrize("permission", ["star_citizen", "star_citizen_log"])

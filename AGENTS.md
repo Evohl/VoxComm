@@ -92,7 +92,8 @@ Default section order:
 - Server API keys are optional and used as bearer credentials for HTTP LLM, whisper.cpp, and OpenAI-compatible TTS requests and discovery; Wyoming TCP has no API-key support. Preserve existing `ollama_api_key` values.
 - General settings fit in the minimum dialog size; profile instructions, the controller catalog, and the Star Citizen event log expand with the window. Show game status outside the event log.
 - The Star Citizen log view defaults to recognized events and offers an opt-in unfiltered view limited to 10,000 lines; the raw view must not alter event tracking or bypass profile permissions.
-- Star Citizen audio-confirmation checkboxes apply to all profiles, while reply text belongs to the selected profile; the active profile must permit Star Citizen Log.
+- Profile hotkeys independently select their profile for each request; the profile selected in settings does not activate or disable other hotkeys.
+- Star Citizen audio-confirmation checkboxes apply to all profiles; automatic announcements use the first alphabetically named profile permitting Star Citizen Log, falling back to Default, independent of the settings selection. Reply text, voice, and language come from that profile.
 - Announcement replies are edited per event and profile; controller replies are edited in the profile catalog. Both accept the selectable TTS language codes, and existing reply overrides must be retained or migrated without loss.
 - Profile permissions default to disabled. Preserve existing configuration identifiers and fail closed for unknown or disabled tools.
 - PTT device loss cancels an active recording without submitting it; configuration serialization must round-trip valid Unicode TOML strings.

@@ -28,6 +28,51 @@ from voxcomm.theme import rgba, system_accent, system_surface
 
 
 class GameLogReplyTests(unittest.TestCase):
+    def test_announcements_use_the_permitted_profile_not_the_selected_page(self):
+        config = AppConfig(
+            special_prompts={"Star Citizen": ""},
+            enabled_tools={"Star Citizen": ["star_citizen_log"]},
+            profile_voices={"Star Citizen": "en-test"},
+            profile_output_languages={"Star Citizen": "English"},
+            input_reply_overrides={reply_override_key("Star Citizen", game_reply_action(NAV_TARGET_SET), "EN"): "Route set."},
+        )
+        overlay = Mock(config=config, _speech_jobs=0)
+        overlay._game_log.take_events.return_value = [NAV_TARGET_SET]
+        overlay._game_log.facts.ship = ""
+        overlay._response_language_for_profile.side_effect = lambda profile, voice: config.profile_output_languages[profile]
+
+        Overlay._poll_game_log(overlay)
+
+        overlay._game_log.poll.assert_called_once()
+        overlay._start_speak.assert_called_once_with("Route set.", voice_override="en-test", language_override="English")
+
+    def test_announcements_choose_one_named_profile_when_several_are_permitted(self):
+        config = AppConfig(
+            special_prompts={"Zulu": "", "Alpha": ""},
+            enabled_tools={"__global__": ["star_citizen_log"], "Zulu": ["star_citizen_log"],
+                           "Alpha": ["star_citizen"]},
+            profile_voices={"Alpha": "alpha-voice"},
+            input_reply_overrides={reply_override_key("Alpha", game_reply_action(NAV_TARGET_SET), "EN"): "Alpha route."},
+        )
+        overlay = Mock(config=config, _speech_jobs=0)
+        overlay._game_log.take_events.return_value = [NAV_TARGET_SET]
+        overlay._game_log.facts.ship = ""
+        overlay._response_language_for_profile.return_value = "English"
+
+        Overlay._poll_game_log(overlay)
+
+        overlay._game_log.poll.assert_called_once()
+        overlay._start_speak.assert_called_once_with("Alpha route.", voice_override="alpha-voice", language_override="English")
+
+    def test_announcements_do_not_read_log_without_permission(self):
+        config = AppConfig(special_prompts={"Star Citizen": ""}, enabled_tools={"Star Citizen": ["star_citizen_uex"]})
+        overlay = Mock(config=config, _speech_jobs=0)
+
+        Overlay._poll_game_log(overlay)
+
+        overlay._game_log.poll.assert_not_called()
+        overlay._start_speak.assert_not_called()
+
     def test_game_status_list_includes_version_and_build(self):
         from voxcomm.app import _game_status_lines
         from voxcomm.gamelog.facts import GameFacts
