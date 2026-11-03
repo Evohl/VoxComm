@@ -35,6 +35,52 @@ def _ndjson(*chunks):
     return [json.dumps({"message": chunk, "done": False}) for chunk in chunks]
 
 
+class SourceAnnouncementTests(unittest.TestCase):
+    def test_announces_before_search_and_model_response(self):
+        order = []
+        with (patch("voxcomm.providers.llm.search_web", side_effect=lambda query: order.append("search") or []),
+              patch("voxcomm.providers.llm._request", side_effect=lambda *args, **kwargs: order.append("model") or {"content": "Done"})):
+            answer = chat("ollama", "http://localhost", "model", "weather tomorrow",
+                          enabled_tools=["web_search", "star_citizen_log"], on_source=lambda source: order.append(source))
+        self.assertEqual(order, ["Requesting CommArray.", "search", "model"])
+        self.assertEqual(answer, "Requesting CommArray.\nDone")
+
+    def test_cancellation_at_announcement_prevents_search(self):
+        cancel_event = threading.Event()
+        with (patch("voxcomm.providers.llm.search_web") as search,
+              patch("voxcomm.providers.llm._request_stream") as request):
+            answer = chat("ollama", "http://localhost", "model", "weather tomorrow",
+                          enabled_tools=["web_search", "star_citizen_log"], cancel_event=cancel_event,
+                          on_source=lambda source: cancel_event.set())
+        self.assertEqual(answer, "")
+        search.assert_not_called()
+        request.assert_not_called()
+
+    def test_repeated_search_announced_once_for_star_citizen_profiles(self):
+        call = {"function": {"name": "web_search", "arguments": {"query": "topic"}}}
+        for permission in ("star_citizen_log", "star_citizen_uex", "star_citizen"):
+            with self.subTest(permission=permission):
+                sources = []
+                with (patch("voxcomm.providers.llm.search_web", return_value=[]) as search,
+                      patch("voxcomm.providers.llm._request", side_effect=[
+                          {"tool_calls": [call]}, {"tool_calls": [call]}, {"content": "Done"},
+                      ])):
+                    answer = chat("ollama", "http://localhost", "model", "Find something",
+                                  enabled_tools=[permission, "web_search"], on_source=sources.append)
+                self.assertEqual(sources, ["Requesting CommArray."])
+                self.assertEqual(search.call_count, 2)
+                self.assertEqual(answer, "Requesting CommArray.\nDone")
+
+    def test_other_profiles_do_not_announce_web_search(self):
+        sources = []
+        with (patch("voxcomm.providers.llm.search_web", return_value=[]),
+              patch("voxcomm.providers.llm._request", return_value={"content": "Done"})):
+            answer = chat("ollama", "http://localhost", "model", "weather tomorrow",
+                          enabled_tools=["web_search"], on_source=sources.append)
+        self.assertEqual(sources, [])
+        self.assertEqual(answer, "Done")
+
+
 class StreamingTests(unittest.TestCase):
     @patch("voxcomm.providers.llm.httpx.stream")
     def test_streaming_uses_optional_key_for_local_providers(self, stream):
@@ -137,7 +183,7 @@ class StreamingTests(unittest.TestCase):
 
         answer = chat("ollama", "http://h:11434", "m", "Where is Levski?", enabled_tools=["star_citizen"])
 
-        self.assertEqual(answer, "UEX lists Levski as a terminal.")
+        self.assertEqual(answer, "Requesting Local UEX Database.\nUEX lists Levski as a terminal.")
         offered = post.call_args_list[0].kwargs["json"]["tools"]
         self.assertEqual([tool["function"]["name"] for tool in offered], ["star_citizen"])
         self.assertIn("commodities_prices", post.call_args_list[0].kwargs["json"]["messages"][0]["content"])
@@ -157,12 +203,30 @@ class StreamingTests(unittest.TestCase):
         post.return_value = Mock(json=Mock(return_value={"message": {"content": "Erledigt"}}))
         statuses = []
 
-        chat("ollama", "http://h:11434", "m", "Wie ist das Wetter heute?",
-             enabled_tools=["web_search"], on_status=statuses.append)
+        answer = chat("ollama", "http://h:11434", "m", "Wie ist das Wetter heute?",
+                  enabled_tools=["web_search"], on_status=statuses.append)
 
+        self.assertEqual(answer, "Erledigt")
         self.assertTrue(statuses[0].startswith("Web search: Wie ist das Wetter "))
         self.assertEqual(statuses[1], "Waiting for model response …")
         search.assert_called_once()
+
+    @patch("voxcomm.providers.llm.httpx.stream")
+    @patch("voxcomm.providers.llm.query_uex", return_value={"status": "ok", "matches": [{"name": "Levski"}]})
+    def test_uex_source_precedes_response_without_streaming_early_text(self, uex, stream):
+        call = {"function": {"name": "star_citizen", "arguments": {"operation": "terminals", "query": "Levski"}}}
+        stream.side_effect = [
+            FakeStreamResponse(_ndjson({"content": "Checking."}, {"tool_calls": [call]})),
+            FakeStreamResponse(_ndjson({"content": "Levski is on Delamar."})),
+        ]
+        deltas = []
+
+        answer = chat("ollama", "http://h", "m", "Where is Levski?", enabled_tools=["star_citizen"],
+                      on_text=deltas.append, cancel_event=threading.Event())
+
+        self.assertEqual(answer, "Requesting Local UEX Database.\nLevski is on Delamar.")
+        self.assertEqual(deltas, [])
+        uex.assert_called_once()
 
     @patch("voxcomm.providers.llm.httpx.post")
     @patch("voxcomm.providers.llm.search_web", return_value=[])

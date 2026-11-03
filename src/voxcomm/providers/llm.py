@@ -33,7 +33,7 @@ from voxcomm.skills.controller.tool import (
     execute_input_control,
 )
 from voxcomm.skills.star_citizen.tool import (
-    STAR_CITIZEN_LEGACY, STAR_CITIZEN_POLICY, STAR_CITIZEN_QUERY_PATTERN, STAR_CITIZEN_TOOL, allows_uex, execute_uex,
+    STAR_CITIZEN_LEGACY, STAR_CITIZEN_POLICY, STAR_CITIZEN_QUERY_PATTERN, STAR_CITIZEN_TOOL, allows_game_log, allows_uex, execute_uex,
 )
 from voxcomm.skills.star_citizen.uex import query_uex
 
@@ -376,6 +376,7 @@ def chat(
     game_state: dict[str, bool | None] | None = None,
     reply_overrides: dict[tuple[str, str], str] | None = None,
     profile_key: str = "",
+    on_source=None,
 ) -> str:
     state = game_state or {}
 
@@ -501,6 +502,18 @@ def chat(
     executed = 0
     request_started = False
     search_fallback = ""
+    sources = []
+    star_citizen_profile = allows_game_log(enabled_tools) or allows_uex(enabled_tools)
+
+    def mark_source(source: str) -> None:
+        if source not in sources:
+            sources.append(source)
+            if on_source is not None and not cancelled():
+                on_source(source)
+
+    def answer_with_sources(answer: str) -> str:
+        return "\n".join([*sources, answer]) if sources else answer
+
     user_content = prompt
     if pending is not None:
         user_content = (
@@ -511,6 +524,10 @@ def chat(
             query_preview = _dated_search_query(prompt, local_now)[:60]
             report_status(tr("Web search: {query}{ellipsis}", query=query_preview,
                              ellipsis="…" if len(query_preview) == 60 else ""))
+            if star_citizen_profile:
+                mark_source("Requesting CommArray.")
+            if cancelled():
+                return ""
             results = _search_fresh_info(prompt, local_now, search=search)
             if cancelled():
                 return ""
@@ -536,7 +553,7 @@ def chat(
         try:
             offered_tools = available_tools if executed < MAX_TOOL_CALLS and available_tools else None
             # Mit Websuche kann die Antwort nachträglich ersetzt werden, daher dann kein Live-Text.
-            live_text = on_text if not web_search_enabled else None
+            live_text = on_text if not web_search_enabled and not star_citizen_enabled else None
             # Nur der Stream-Pfad kann die Verbindung beim Abbruch trennen und so die Generierung beenden.
             if live_text is not None or cancel_event is not None:
                 message = _request_stream(provider, base_url, model, messages, offered_tools,
@@ -544,7 +561,7 @@ def chat(
             else:
                 message = _request(provider, base_url, model, messages, offered_tools, api_key=api_key, think=think)
         except CloudAuthError as error:
-            return str(error)
+            return answer_with_sources(str(error))
         if cancelled():
             return ""
         calls = _tool_calls(provider, message) if available_tools else []
@@ -564,6 +581,10 @@ def chat(
                     query_preview = _dated_search_query(prompt, local_now)[:60]
                     report_status(tr("Web search: {query}{ellipsis}", query=query_preview,
                                      ellipsis="…" if len(query_preview) == 60 else ""))
+                    if star_citizen_profile:
+                        mark_source("Requesting CommArray.")
+                    if cancelled():
+                        return ""
                     results = _search_fresh_info(prompt, local_now, search=search)
                     if cancelled():
                         return ""
@@ -584,10 +605,10 @@ def chat(
                 except Exception as error:
                     search_fallback = f"Web search failed: {str(error)[:300]}"
             if search_fallback and (not answer or LIVE_INFO_REFUSAL_PATTERN.search(answer)):
-                return search_fallback
-            return answer or "The model returned an empty response."
+                return answer_with_sources(search_fallback)
+            return answer_with_sources(answer or "The model returned an empty response.")
         if executed >= MAX_TOOL_CALLS:
-            return str(message.get("content") or "Web search stopped after the tool-call limit.").strip()
+            return answer_with_sources(str(message.get("content") or "Web search stopped after the tool-call limit.").strip())
         messages.append(message)
         for call in calls:
             if executed >= MAX_TOOL_CALLS:
@@ -614,6 +635,16 @@ def chat(
                         report_status(tr("Star Citizen database: {query}{ellipsis}", query=query_preview,
                                          ellipsis="…" if len(str(arguments.get("query", ""))) > 60 else "")
                                       if query_preview else tr("Star Citizen database query in progress …"))
+                    if cancelled():
+                        return ""
+                    arguments = _arguments(call.get("function", {}).get("arguments", {}))
+                    if (function_name == "web_search" and star_citizen_profile
+                            and function_name in enabled_tool_names and isinstance(arguments.get("query"), str)):
+                        mark_source("Requesting CommArray.")
+                    elif (function_name == "star_citizen" and allows_uex(enabled_tool_names)
+                          and isinstance(arguments.get("operation"), str) and isinstance(arguments.get("query"), str)
+                          and isinstance(arguments.get("location", ""), str)):
+                        mark_source("Requesting Local UEX Database.")
                     if cancelled():
                         return ""
                     result = _execute_tool(call, enabled_tool_names, allowed_entries, search=search,

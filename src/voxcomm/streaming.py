@@ -73,6 +73,10 @@ class SentenceStream:
     def feed(self, delta: str) -> None:
         self._put(self._splitter.feed(delta))
 
+    def feed_sentence(self, sentence: str) -> None:
+        self._put(self._splitter.flush())
+        self._put([sentence])
+
     def finish(self) -> None:
         self._put(self._splitter.flush())
         self._queue.put(None)

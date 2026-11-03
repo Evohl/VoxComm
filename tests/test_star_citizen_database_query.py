@@ -63,6 +63,75 @@ def test_duplicate_exact_commodity_names_require_a_choice(snapshot):
     assert "not a verified route or profit" in result["route_warning"]
 
 
+def test_commodity_location_ids_resolve_to_snapshot_names_without_guessing(snapshot):
+    snapshot({
+        "commodities": [{"id": 34, "name": "Gold (Ore)", "ids_star_systems": "64,68",
+                         "ids_planets": "245,999", "ids_moons": "35,43,69"}],
+        "terminals": [
+            {"id": 1, "id_star_system": 64, "star_system_name": "Pyro", "id_planet": 245,
+             "planet_name": "Terminus", "id_moon": 35, "moon_name": "Fairo"},
+            {"id": 2, "id_star_system": 68, "star_system_name": "Stanton", "id_moon": 43, "moon_name": "Ignis"},
+            {"id": 3, "id_moon": 69, "moon_name": "Vatra"},
+        ],
+    })
+    result = query_uex("commodities", "Gold (Ore)")
+    row = result["matches"][0]
+    assert row["star_system_names"] == "Pyro, Stanton"
+    assert row["planet_names"] == "Terminus"
+    assert row["moon_names"] == "Fairo, Ignis, Vatra"
+    assert row["location_names_incomplete"] is True
+    assert not {"ids_star_systems", "ids_planets", "ids_moons"} & row.keys()
+
+
+@pytest.mark.parametrize("operation", ["commodities", "terminals", "prices", "routes", "vehicles",
+                                       "vehicle_prices", "items", "item_prices", "item_attributes"])
+def test_location_names_are_resolved_and_searchable_across_operations(snapshot, operation):
+    snapshot({
+        "commodities": [{"id": 1, "name": "Gold", "id_planet": 245}],
+        "terminals": [{"id": 7, "name": "Gold Shop", "id_planet": 245},
+                      {"id": 8, "name": "Reference", "id_planet": 245, "planet_name": "Terminus"},
+                      {"id": 9, "name": "Destination"}],
+        "commodities_prices_all": [{"id_commodity": 1, "id_terminal": 7, "id_planet": 245, "price_buy": 10},
+                                   {"id_commodity": 1, "id_terminal": 9, "price_sell": 20}],
+        "vehicles": [{"id": 1, "name": "Gold", "id_planet": 245}],
+        "vehicles_purchases_prices_all": [{"id_vehicle": 1, "id_planet": 245, "price_buy": 10}],
+        "items": [{"id": 1, "name": "Gold", "id_planet": 245}],
+        "items_prices_all": [{"id_item": 1, "id_planet": 245, "price_buy": 10}],
+        "items_attributes": [{"id_item": 1, "id_planet": 245, "name": "Range", "value": "10"}],
+    })
+    result = query_uex(operation, "Gold", "Terminus")
+    assert result["status"] == "ok"
+    assert all("id_planet" not in row for row in result["matches"])
+    name = "origin_planet_name" if operation == "routes" else "planet_name"
+    assert result["matches"][0][name] == "Terminus"
+
+
+def test_conflicting_location_names_are_not_guessed(snapshot):
+    snapshot({"commodities": [{"id": 1, "name": "Gold", "ids_planets": "245"}],
+              "terminals": [{"id": 1, "id_planet": 245, "planet_name": "Terminus"},
+                            {"id": 2, "id_planet": 245, "planet_name": "Other"}]})
+    row = query_uex("commodities", "Gold")["matches"][0]
+    assert row["location_names_incomplete"] is True
+    assert "planet_names" not in row and "ids_planets" not in row
+
+
+def test_unknown_poi_is_not_exposed_as_a_location_number(snapshot):
+    snapshot({"commodities": [{"id": 1, "name": "Gold", "ids_poi": "270"}]})
+    row = query_uex("commodities", "Gold")["matches"][0]
+    assert row["location_names_incomplete"] is True
+    assert "ids_poi" not in row
+
+
+def test_price_does_not_inherit_a_conflicting_terminal_location(snapshot):
+    snapshot({"commodities": [{"id": 1, "name": "Gold"}],
+              "terminals": [{"id": 7, "name": "Desk", "id_planet": 1, "planet_name": "Other"}],
+              "commodities_prices_all": [{"id_commodity": 1, "id_terminal": 7, "id_planet": 245}]})
+    row = query_uex("prices", "Gold")["matches"][0]
+    assert row["terminal_name"] == "Desk"
+    assert row["location_names_incomplete"] is True
+    assert "id_planet" not in row and "planet_name" not in row
+
+
 def test_prices_join_terminal_metadata_and_filter_location(snapshot):
     snapshot({
         "commodities": [{"id": 1, "name": "Gold"}],

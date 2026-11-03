@@ -2038,13 +2038,28 @@ class Overlay(QMainWindow):
                 connection = ship_connection_command(text, self.config.ship_connect_keywords,
                                                      self.config.ship_disconnect_keywords,
                                                      self.config.ship_target_keywords)
-            # Mit Websuche kann die Antwort nachträglich ersetzt werden, daher erst nach der fertigen Antwort sprechen.
             speech = None
             if resolved_profile.auto_speak and "web_search" not in enabled_tools:
                 speech = SentenceStream(
                     cancel_event, on_first=lambda: self.events.speak.emit(
                         speech, cancel_event, profile_voice, reply_language))
             streamed = []
+            source_announcements = []
+
+            def announce_source(source: str):
+                nonlocal speech
+                if cancel_event.is_set():
+                    return
+                source_announcements.append(source)
+                self.events.request_message.emit(
+                    THINKING_STATUS, f"{USER_PREFIX}{text}{AI_MARKER}" + "\n".join(source_announcements), cancel_event)
+                if speech is None and resolved_profile.auto_speak:
+                    speech = SentenceStream(
+                        cancel_event, on_first=lambda: self.events.speak.emit(
+                            speech, cancel_event, profile_voice, reply_language))
+                if speech is not None:
+                    speech.feed_sentence(source)
+
             try:
                 if connection is not None and not cancel_event.is_set():
                     ship = self._game_log.set_ship_connection(connection)
@@ -2079,11 +2094,13 @@ class Overlay(QMainWindow):
                         reply_overrides=reply_overrides_for_profile(
                             self.config.input_reply_overrides, profile_key),
                         profile_key=profile_key,
+                        on_source=announce_source,
                     )
                 else:
                     return
                 if speech is not None and not streamed and not cancel_event.is_set():
-                    speech.feed(answer)
+                    prefix = "\n".join(source_announcements) + "\n" if source_announcements else ""
+                    speech.feed(answer[len(prefix):] if prefix and answer.startswith(prefix) else answer)
             finally:
                 if speech is not None:
                     speech.finish()

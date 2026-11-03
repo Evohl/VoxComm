@@ -165,6 +165,82 @@ def test_capture_and_replay_use_requested_profile_languages(stt_provider, stream
             overlay.deleteLater()
 
 
+@pytest.mark.parametrize(("tools", "tool", "source"), [
+    (["star_citizen_uex"], "star_citizen_uex", "Requesting Local UEX Database."),
+    (["star_citizen_log", "web_search"], "web_search", "Requesting CommArray."),
+])
+def test_capture_speaks_actual_search_source_before_answer(tools, tool, source):
+    from voxcomm.app import Overlay
+
+    app = QApplication.instance() or QApplication([])
+    config = AppConfig(profile_models={"__global__": "test-model"},
+                       profile_auto_speak={"__global__": True}, enabled_tools={"__global__": tools})
+    function = ({"name": "star_citizen", "arguments": {"operation": "commodities", "query": "Gold"}}
+                if tool == "star_citizen_uex" else {"name": "web_search", "arguments": {"query": "topic"}})
+    with (patch("voxcomm.app.load_config", return_value=config), patch("voxcomm.app.PttListener"),
+          patch("voxcomm.app.database.start_refresh_if_due"),
+          patch("voxcomm.app.record_until_released", return_value=b"\0" * 9600),
+          patch("voxcomm.app.transcribe_sync", return_value="Find something"),
+          patch("voxcomm.providers.llm.query_uex") as uex,
+          patch("voxcomm.providers.llm.search_web") as search,
+          patch("voxcomm.providers.llm._request_stream", side_effect=[
+              {"content": "", "tool_calls": [{"function": function}]}, {"content": "Here is the answer."},
+          ])):
+        overlay = Overlay()
+        overlay.events.speak.disconnect(overlay._start_speak)
+        spoken = []
+        overlay.events.speak.connect(lambda *args: spoken.append(args))
+        displayed = []
+        overlay.events.request_message.connect(lambda status, text, cancel: displayed.append(text))
+        observations = []
+
+        def verify_early(*args):
+            observations.append((displayed[-1], len(spoken), bool(spoken and spoken[0][0].started)))
+            return {"status": "ok", "matches": []} if tool == "star_citizen_uex" else []
+
+        uex.side_effect = verify_early
+        search.side_effect = verify_early
+        try:
+            overlay._capture(threading.Event())
+            assert len(observations) == 1
+            assert observations[0][0].endswith(source)
+            assert observations[0][1:] == (1, True)
+            assert len(spoken) == 1
+            assert list(spoken[0][0]) == [source, "Here is the answer."]
+        finally:
+            overlay.listener.stop()
+            overlay.tray_icon.hide()
+            overlay.deleteLater()
+
+
+def test_other_profile_web_search_has_no_source_announcement():
+    from voxcomm.app import Overlay
+
+    app = QApplication.instance() or QApplication([])
+    config = AppConfig(profile_models={"__global__": "test-model"},
+                       profile_auto_speak={"__global__": True}, enabled_tools={"__global__": ["web_search"]})
+    call = {"function": {"name": "web_search", "arguments": {"query": "topic"}}}
+    with (patch("voxcomm.app.load_config", return_value=config), patch("voxcomm.app.PttListener"),
+          patch("voxcomm.app.record_until_released", return_value=b"\0" * 9600),
+          patch("voxcomm.app.transcribe_sync", return_value="Find something"),
+          patch("voxcomm.providers.llm.search_web", return_value=[]),
+          patch("voxcomm.providers.llm._request_stream", side_effect=[
+              {"content": "", "tool_calls": [call]}, {"content": "Here is the answer."},
+          ])):
+        overlay = Overlay()
+        overlay.events.speak.disconnect(overlay._start_speak)
+        spoken = []
+        overlay.events.speak.connect(lambda *args: spoken.append(args))
+        try:
+            overlay._capture(threading.Event())
+            assert [entry[0] for entry in spoken] == ["Here is the answer."]
+            assert overlay._last_response == "Here is the answer."
+        finally:
+            overlay.listener.stop()
+            overlay.tray_icon.hide()
+            overlay.deleteLater()
+
+
 def test_synthesis_and_game_announcement_use_their_profile_language():
     from unittest.mock import Mock
     from voxcomm.app import Overlay

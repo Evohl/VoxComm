@@ -223,10 +223,15 @@ def test_chat_runs_granular_uex_tool_without_web_search():
           patch("voxcomm.providers.llm.query_uex", return_value={"status": "ok"}) as uex,
           patch("voxcomm.providers.llm.search_web") as search):
         assert chat("ollama", "http://localhost", "model", "Find Levski",
-                    enabled_tools=["star_citizen_uex", "web_search"]) == "Found"
+                    enabled_tools=["star_citizen_uex", "web_search"]) == "Requesting Local UEX Database.\nFound"
     uex.assert_called_once_with("terminals", "Levski", "")
     search.assert_not_called()
     assert json.loads(requests[1][-1]["content"]) == {"status": "ok"}
+    policy = requests[1][0]["content"]
+    assert "VoxComm announces the source before your answer" in policy
+    assert "do not repeat the source" in policy
+    assert "Do not add a generic disclaimer" in policy
+    assert "mention specific stale data, version mismatches" in policy
 
 
 def test_controller_web_and_uex_tool_selection_are_independent():

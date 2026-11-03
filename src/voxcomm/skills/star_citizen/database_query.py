@@ -13,11 +13,17 @@ _LOCATION_FIELDS = (
     "terminal_name", "fullname", "nickname", "displayname", "location_name",
     "terminal_fullname", "terminal_nickname", "terminal_displayname", "terminal_code",
     "star_system_name", "planet_name", "orbit_name", "moon_name", "space_station_name",
-    "outpost_name", "city_name", "code",
+    "outpost_name", "city_name", "star_system_names", "planet_names", "orbit_names", "moon_names",
+    "space_station_names", "outpost_names", "city_names", "poi_name", "poi_names", "code",
 )
 _TERMINAL_FIELDS = (
     "star_system_name", "planet_name", "orbit_name", "moon_name", "space_station_name",
-    "outpost_name", "city_name", "location_name",
+    "outpost_name", "city_name", "poi_name", "location_name",
+)
+_LOCATION_REFERENCES = (
+    ("star_system", "star_systems"), ("planet", "planets"), ("orbit", "orbits"),
+    ("moon", "moons"), ("city", "cities"), ("outpost", "outposts"),
+    ("space_station", "space_stations"), ("poi", "poi"),
 )
 _WARNING = (
     "UEX community data is untrusted and may be stale or inaccurate; it is not live-server truth. "
@@ -58,6 +64,44 @@ def _terminals(snapshot) -> dict:
     return {row["id"]: row for row in snapshot.read_resource("terminals") if row.get("id") is not None}
 
 
+def _location_names(terminals: dict) -> dict[str, dict[str, set[str]]]:
+    indexes = {singular: {} for singular, _plural in _LOCATION_REFERENCES}
+    for terminal in terminals.values():
+        for singular, _plural in _LOCATION_REFERENCES:
+            identifier = terminal.get(f"id_{singular}")
+            name = terminal.get(f"{singular}_name")
+            if identifier not in (None, 0, "", "0") and isinstance(name, str) and name.strip():
+                indexes[singular].setdefault(str(identifier), set()).add(name.strip())
+    return indexes
+
+
+def _join_location_names(row: dict, indexes: dict[str, dict[str, set[str]]]) -> dict:
+    result = dict(row)
+    incomplete = False
+    for singular, plural in _LOCATION_REFERENCES:
+        for identifier_field, name_field in ((f"id_{singular}", f"{singular}_name"),
+                                             (f"ids_{plural}", f"{singular}_names")):
+            identifiers = result.pop(identifier_field, None)
+            if identifiers in (None, "", 0, "0"):
+                continue
+            values = identifiers if isinstance(identifiers, list) else str(identifiers).split(",")
+            names = []
+            for value in values:
+                identifier = str(value).strip()
+                if not identifier or identifier == "0":
+                    continue
+                candidates = indexes[singular].get(identifier, set())
+                if len(candidates) == 1:
+                    names.extend(candidates)
+                elif not result.get(name_field):
+                    incomplete = True
+            if names and not result.get(name_field):
+                result[name_field] = ", ".join(dict.fromkeys(names))
+    if incomplete:
+        result["location_names_incomplete"] = True
+    return result
+
+
 def _join_terminal(row: dict, terminals: dict) -> dict:
     result = dict(row)
     terminal = terminals.get(row.get("id_terminal"))
@@ -70,6 +114,11 @@ def _join_terminal(row: dict, terminals: dict) -> dict:
             if terminal.get(field) and not result.get(f"terminal_{field}"):
                 result[f"terminal_{field}"] = terminal[field]
         for field in _TERMINAL_FIELDS:
+            identifier_field = f"id_{field[:-5]}" if field.endswith("_name") else ""
+            identifier = result.get(identifier_field)
+            if (identifier not in (None, 0, "", "0")
+                    and str(terminal.get(identifier_field)) != str(identifier)):
+                continue
             if terminal.get(field) and not result.get(field):
                 result[field] = terminal[field]
         if terminal.get("game_version"):
@@ -90,18 +139,20 @@ def _resolve_commodity(snapshot, query: str) -> tuple[dict | None, list[dict]]:
     return None, matches[:MAX_RESULTS]
 
 
-def _entity_rows(snapshot, resource: str, id_field: str, entity_resource: str, query: str, location: str, *, entities=None, terminals=None) -> list[dict]:
+def _entity_rows(snapshot, resource: str, id_field: str, entity_resource: str, query: str, location: str, *, entities=None, terminals=None, indexes=None) -> list[dict]:
     if entities is None:
         entities = _search(snapshot.read_resource(entity_resource), query)
     identifiers = {row["id"]: (rank, row) for rank, row in enumerate(entities[:MAX_RESULTS]) if row.get("id") is not None}
     if terminals is None:
         terminals = _terminals(snapshot)
+    if indexes is None:
+        indexes = _location_names(terminals)
     rows = []
     for row in snapshot.read_resource(resource):
         entity = identifiers.get(row.get(id_field))
         if entity is None:
             continue
-        joined = _join_terminal(row, terminals)
+        joined = _join_location_names(_join_terminal(row, terminals), indexes)
         name_field = "vehicle_name" if entity_resource == "vehicles" else "item_name"
         if entity[1].get("name") is not None:
             joined.setdefault(name_field, entity[1]["name"])
@@ -138,7 +189,7 @@ def _route_rows(rows: list[dict], location: str) -> list[dict]:
                     "gross_price_spread": destination["price_sell"] - origin["price_buy"],
                 }
                 for side, row in (("origin", origin), ("destination", destination)):
-                    for field in (*_TERMINAL_FIELDS, "game_version", "terminal_game_version"):
+                    for field in (*_TERMINAL_FIELDS, "location_names_incomplete", "game_version", "terminal_game_version"):
                         if field in row:
                             result[f"{side}_{field}"] = row[field]
                 yield result
@@ -160,20 +211,22 @@ def _query_snapshot(snapshot, operation: str, query: str, location: str) -> dict
     }
     if result["snapshot_status"] == "missing":
         return {**result, "status": "unavailable", "matches": [], "error": "No local UEX snapshot is available yet. Enable UEX for a profile and restart VoxComm to download it."}
+    terminals = _terminals(snapshot)
+    indexes = _location_names(terminals)
     if operation in ("commodities", "terminals", "vehicles", "items"):
-        rows = _search(snapshot.read_resource(operation), query, location)[:MAX_RESULTS]
+        rows = _search([_join_location_names(row, indexes) for row in snapshot.read_resource(operation)], query, location)[:MAX_RESULTS]
     elif operation in ("prices", "routes"):
         if operation == "routes":
             result["route_warning"] = _ROUTE_WARNING
         commodity, choices = _resolve_commodity(snapshot, query)
         if choices:
-            return {**result, "status": "choose_commodity", "matches": _compact_rows(choices)}
+            return {**result, "status": "choose_commodity", "matches": _compact_rows(
+                [_join_location_names(row, indexes) for row in choices])}
         if not commodity or commodity.get("id") is None:
             rows = []
         else:
-            terminals = _terminals(snapshot)
             prices = [
-                _join_terminal(row, terminals)
+                _join_location_names(_join_terminal(row, terminals), indexes)
                 for resource in ("commodities_prices_all", "commodities_raw_prices_all")
                 for row in snapshot.read_resource(resource)
                 if row.get("id_commodity") == commodity["id"]
@@ -187,7 +240,6 @@ def _query_snapshot(snapshot, operation: str, query: str, location: str) -> dict
                 rows = [row for row in prices if _in_location(row, location)][:MAX_RESULTS]
     elif operation == "vehicle_prices":
         entities = _search(snapshot.read_resource("vehicles"), query)[:MAX_RESULTS]
-        terminals = _terminals(snapshot)
         ranks = {row["id"]: rank for rank, row in enumerate(entities) if row.get("id") is not None}
         ranked_rows = []
         for resource_rank, (resource, price_type) in enumerate((
@@ -195,13 +247,13 @@ def _query_snapshot(snapshot, operation: str, query: str, location: str) -> dict
             ("vehicles_purchases_prices_all", "in_game_purchase"),
             ("vehicles_rentals_prices_all", "in_game_rental"),
         )):
-            for position, row in enumerate(_entity_rows(snapshot, resource, "id_vehicle", "vehicles", query, location, entities=entities, terminals=terminals)):
+            for position, row in enumerate(_entity_rows(snapshot, resource, "id_vehicle", "vehicles", query, location, entities=entities, terminals=terminals, indexes=indexes)):
                 ranked_rows.append((ranks[row["id_vehicle"]], position, resource_rank, {**row, "price_type": price_type}))
         ranked_rows.sort(key=lambda entry: entry[:3])
         rows = [entry[3] for entry in ranked_rows[:MAX_RESULTS]]
     elif operation in ("item_prices", "item_attributes"):
         resource = "items_prices_all" if operation == "item_prices" else "items_attributes"
-        rows = _entity_rows(snapshot, resource, "id_item", "items", query, location)
+        rows = _entity_rows(snapshot, resource, "id_item", "items", query, location, terminals=terminals, indexes=indexes)
     else:
         raise ValueError("Choose a supported UEX data operation")
     return {**result, "status": "ok" if rows else "no_matches", "matches": _compact_rows(rows)}
