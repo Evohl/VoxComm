@@ -13,6 +13,7 @@
 - Selectable chat backend: local Ollama, Ollama Cloud with an API key, or llama.cpp.
 - A Default profile plus manually selected or hotkey-activated specialty profiles.
 - Optional web search, enabled independently for each profile.
+- Optional Star Citizen UEX reference data, searched from a local snapshot with a profile permission.
 - Optional controller actions: keyword-matched voice commands press buttons on a virtual game controller, as taps or 1 s holds.
 - Optional automatic speech output and replay of the last answer.
 - Tray mode, draggable overlay, remembered position, and a reset control.
@@ -146,6 +147,10 @@ A reachable port does not guarantee a healthy service or a configured model/voic
 Open **Settings** from the overlay or tray. Each section picks its own interface:
 
 In Star Citizen, the Game.log can announce a detected ship; ship-control access is reported as established only after the pilot seat is confirmed.
+
+With Star Citizen Log enabled for an existing profile, VoxComm incrementally collects observed ship class identifiers and ship channel names from the running game's log. Open **Settings → Profiles → Star Citizen Log → Observed ships** to inspect the accumulated names and their UEX manufacturer and ship suggestions. When an existing profile has both Log and UEX enabled and a model configured, the model automatically selects from the local UEX snapshot in the background. Class identifiers and UEX candidates are sent to the configured model provider, which may be remote; player names and raw log lines are not sent. Suggestions are unverified and do not change game-log facts. Select a row and use **Change mapping** to correct it, or **Retry unidentified** to try unresolved entries again. Manual choices are retained. The collector recognizes known vehicle and channel log patterns, not every possible ship-related line, and stores no player names or instance IDs. Its persistent local list is `${XDG_DATA_HOME:-~/.local/share}/voxcomm/star_citizen_ships.sqlite3`.
+
+Enable Star Citizen UEX for a profile to search ships, components, weapons, commodities, terminals, prices, and item attributes from a local UEX community snapshot. At startup, VoxComm refreshes the snapshot in the background when an existing profile permits UEX and the last successful refresh is at least 24 hours old. Restart VoxComm after enabling the permission to start the first download. Until it completes, UEX data is unavailable; a failed refresh leaves the last successful snapshot intact. The cache is stored at `${XDG_DATA_HOME:-~/.local/share}/voxcomm/star_citizen_uex.sqlite3`. Searches do not contact UEX. Data can be outdated or inaccurate and does not establish live availability; trade comparisons are indicative price spreads, not verified routes or profits. The Star Citizen Log permission alone does not download UEX data.
 
 Edit the assistant's role and speaking style in **Settings → Profiles → Profile** for the selected profile. These instructions are saved in the user's configuration and do not apply to other profiles.
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from voxcomm.action_catalog import REQUIREMENT_TEXT, UNKNOWN_STATE_TEXT, action_reply, unmet_requirement
-from voxcomm.i18n import tr
+from voxcomm.action_catalog import REQUIREMENT_TEXT, UNKNOWN_STATE_TEXT, action_reply, reply_language_tag, unmet_requirement
+from voxcomm.i18n import tr_for_language
 
 
 INPUT_CONTROL_TOOL = {
@@ -53,13 +53,14 @@ def _input_control_tool(actions: list[dict[str, object]]) -> dict:
     return tool
 
 
-def _precondition_message(actions: tuple[dict[str, object], ...], state: dict[str, bool | None]) -> str:
+def _precondition_message(actions: tuple[dict[str, object], ...], state: dict[str, bool | None],
+                          reply_language: str = "") -> str:
     for action in actions:
         requirement = unmet_requirement(action, state)
         if requirement is not None:
             if state.get(requirement[0]) is None:
-                return tr(UNKNOWN_STATE_TEXT[requirement[0]])
-            return tr(REQUIREMENT_TEXT[requirement])
+                return tr_for_language(UNKNOWN_STATE_TEXT[requirement[0]], reply_language_tag(reply_language))
+            return tr_for_language(REQUIREMENT_TEXT[requirement], reply_language_tag(reply_language))
     return ""
 
 
@@ -71,7 +72,8 @@ def _press_actions(actions: tuple[dict[str, object], ...], reply_language: str, 
         try:
             send(action["button"], hold=bool(action["hold"]))
         except Exception as error:
-            return tr("Captain, controller input was not sent: {error}", error=str(error)[:300])
+            return tr_for_language("Captain, controller input was not sent: {error}",
+                                   reply_language_tag(reply_language), error=str(error)[:300])
         replies.append(action_reply(action, reply_language))
     if cancelled():
         return ""

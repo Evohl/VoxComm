@@ -4,6 +4,7 @@ import tempfile
 import threading
 import time
 import unittest
+from collections import deque
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -23,11 +24,62 @@ from voxcomm.app import (
     configure_application, game_event_reply, game_reply_action, prefer_x11_on_wayland, transcript_segments,
 )
 from voxcomm.config import AppConfig, reply_override_key
-from voxcomm.gamelog.facts import NAV_TARGET_SET, PILOT_TAKEN, SHIP_ENTERED
+from voxcomm.gamelog.facts import GameEvent, NAV_TARGET_SET, PILOT_LEFT, PILOT_TAKEN, QUANTUM_SIGNATURE_UNKNOWN, SHIP_ENTERED
 from voxcomm.theme import rgba, system_accent, system_surface
 
 
 class GameLogReplyTests(unittest.TestCase):
+    def setUp(self):
+        self.queue = deque(maxlen=20)
+
+    def test_unknown_signatures_use_each_ship_and_respect_switch(self):
+        config = AppConfig(enabled_tools={"__global__": ["star_citizen_log"]})
+        overlay = Mock(config=config, _speech_jobs=0, _pending_pilot_left_ship=None, _pending_quantum_signatures=self.queue)
+        overlay._game_log.facts.ship = "Own ship"
+        overlay._response_language_for_profile.return_value = "English"
+        overlay._game_log.take_events.return_value = [GameEvent(QUANTUM_SIGNATURE_UNKNOWN, "Origin 85X"),
+                                                      GameEvent(QUANTUM_SIGNATURE_UNKNOWN, "Crusader Spirit C1")]
+        Overlay._poll_game_log(overlay)
+        overlay._start_speak.assert_called_once_with(
+            "Unknown quantum signature detected: Origin 85X. Unknown quantum signature detected: Crusader Spirit C1.",
+            voice_override="", language_override="English")
+        overlay._start_speak.reset_mock()
+        config.game_announce_quantum_signature_unknown = False
+        Overlay._poll_game_log(overlay)
+        overlay._start_speak.assert_not_called()
+
+    def test_unknown_signature_waits_for_current_speech_and_can_be_cancelled(self):
+        config = AppConfig(enabled_tools={"__global__": ["star_citizen_log"]})
+        overlay = Mock(config=config, _speech_jobs=1, _pending_pilot_left_ship=None, _pending_quantum_signatures=self.queue)
+        overlay._game_log.facts.ship = "C1"
+        overlay._response_language_for_profile.return_value = "English"
+        overlay._game_log.take_events.side_effect = [[GameEvent(QUANTUM_SIGNATURE_UNKNOWN, "Origin 85X")], []]
+        Overlay._poll_game_log(overlay)
+        overlay._start_speak.assert_not_called()
+        overlay._speech_jobs = 0
+        Overlay._poll_game_log(overlay)
+        overlay._start_speak.assert_called_once_with("Unknown quantum signature detected: Origin 85X.",
+                                                     voice_override="", language_override="English")
+        overlay._start_speak.reset_mock()
+        overlay._speech_jobs = 1
+        overlay._game_log.take_events.side_effect = [[GameEvent(QUANTUM_SIGNATURE_UNKNOWN, "Origin 85X")], []]
+        Overlay._poll_game_log(overlay)
+        config.game_announce_quantum_signature_unknown = False
+        overlay._speech_jobs = 0
+        Overlay._poll_game_log(overlay)
+        overlay._start_speak.assert_not_called()
+
+    def test_pilot_entry_is_not_announced_but_leaving_still_is(self):
+        config = AppConfig(enabled_tools={"__global__": ["star_citizen_log"]})
+        overlay = Mock(config=config, _speech_jobs=0, _pending_pilot_left_ship=None, _pending_quantum_signatures=self.queue)
+        overlay._game_log.take_events.return_value = [PILOT_TAKEN, PILOT_LEFT]
+        overlay._game_log.facts.ship = "C1"
+        overlay._response_language_for_profile.return_value = "English"
+
+        Overlay._poll_game_log(overlay)
+
+        overlay._start_speak.assert_called_once_with("Disconnected from C1.", voice_override="", language_override="English")
+
     def test_announcements_use_the_permitted_profile_not_the_selected_page(self):
         config = AppConfig(
             special_prompts={"Star Citizen": ""},
@@ -36,7 +88,7 @@ class GameLogReplyTests(unittest.TestCase):
             profile_output_languages={"Star Citizen": "English"},
             input_reply_overrides={reply_override_key("Star Citizen", game_reply_action(NAV_TARGET_SET), "EN"): "Route set."},
         )
-        overlay = Mock(config=config, _speech_jobs=0)
+        overlay = Mock(config=config, _speech_jobs=0, _pending_pilot_left_ship=None, _pending_quantum_signatures=self.queue)
         overlay._game_log.take_events.return_value = [NAV_TARGET_SET]
         overlay._game_log.facts.ship = ""
         overlay._response_language_for_profile.side_effect = lambda profile, voice: config.profile_output_languages[profile]
@@ -54,7 +106,7 @@ class GameLogReplyTests(unittest.TestCase):
             profile_voices={"Alpha": "alpha-voice"},
             input_reply_overrides={reply_override_key("Alpha", game_reply_action(NAV_TARGET_SET), "EN"): "Alpha route."},
         )
-        overlay = Mock(config=config, _speech_jobs=0)
+        overlay = Mock(config=config, _speech_jobs=0, _pending_pilot_left_ship=None, _pending_quantum_signatures=self.queue)
         overlay._game_log.take_events.return_value = [NAV_TARGET_SET]
         overlay._game_log.facts.ship = ""
         overlay._response_language_for_profile.return_value = "English"
@@ -66,7 +118,7 @@ class GameLogReplyTests(unittest.TestCase):
 
     def test_announcements_do_not_read_log_without_permission(self):
         config = AppConfig(special_prompts={"Star Citizen": ""}, enabled_tools={"Star Citizen": ["star_citizen_uex"]})
-        overlay = Mock(config=config, _speech_jobs=0)
+        overlay = Mock(config=config, _speech_jobs=0, _pending_quantum_signatures=self.queue)
 
         Overlay._poll_game_log(overlay)
 
@@ -86,14 +138,18 @@ class GameLogReplyTests(unittest.TestCase):
         self.assertEqual(game_event_reply({}, NAV_TARGET_SET, "__global__", "DE"), "Captain, Navziel ausgewählt.")
         self.assertEqual(game_event_reply({}, NAV_TARGET_SET, "__global__", "EN"), "Captain, nav target selected.")
 
-    def test_pilot_seat_confirmation_uses_ship_name_or_mobiglas_fallback(self):
+    def test_pilot_seat_confirmation_uses_ship_name_or_fallback(self):
         self.assertEqual(
             game_event_reply({}, PILOT_TAKEN, "__global__", "EN", "Crusader C1 Spirit"),
-            "Connection to Crusader C1 Spirit successful, Captain.",
+            "Connected to Crusader C1 Spirit's ship computer.",
         )
         self.assertEqual(
             game_event_reply({}, PILOT_TAKEN, "__global__", "DE"),
-            "Verbindung zu deinem Schiff erfolgreich, Captain.",
+            "Mit dem Schiffscomputer von deinem Schiff verbunden.",
+        )
+        self.assertEqual(
+            game_event_reply({}, PILOT_LEFT, "__global__", "EN", "Crusader C1 Spirit"),
+            "Disconnected from Crusader C1 Spirit.",
         )
         self.assertEqual(
             game_event_reply({}, SHIP_ENTERED, "__global__", "EN"),
@@ -147,6 +203,113 @@ class ApplicationLifecycleTests(unittest.TestCase):
 
     def tearDown(self):
         self._config_patch.stop()
+
+    def test_ship_collection_requires_enabled_log_profile(self):
+        app = QApplication.instance() or QApplication([])
+        with patch("voxcomm.app.PttListener"), patch("voxcomm.app.ships.ShipLogCollector") as collector:
+            overlay = Overlay()
+            overlay._game_log = Mock(path=Path("/tmp/Game.log"))
+            overlay._game_log.take_events.return_value = []
+            overlay._game_log.connected_ship = (False, "")
+            overlay._poll_game_log()
+            collector.return_value.scan.assert_not_called()
+            overlay.config.enabled_tools = {"__global__": ["star_citizen_log"]}
+            overlay._poll_game_log()
+            collector.return_value.scan.assert_called_once_with(Path("/tmp/Game.log"))
+            overlay.listener.stop()
+            overlay.tray_icon.hide()
+            overlay.deleteLater()
+
+    def test_observed_ship_list_is_separate_and_closes_without_log_permission(self):
+        from PySide6.QtWidgets import QPlainTextEdit, QTableWidget
+
+        app = QApplication.instance() or QApplication([])
+        dialog = SettingsDialog(AppConfig(enabled_tools={"__global__": ["star_citizen_log"]}))
+        with patch("voxcomm.app.ships.list_names", return_value=[
+            ("class", "CRUS_Spirit_C1"), ("channel", "Crusader C1 Spirit"),
+        ]):
+            dialog.observed_ships_button.click()
+        view = dialog._ships_dialog
+        self.assertIsNotNone(view)
+        self.assertEqual(view.findChild(QTableWidget, "observed_ships_table").item(0, 0).text(), "CRUS_Spirit_C1")
+        self.assertEqual(view.findChild(QPlainTextEdit, "observed_ships_channel").toPlainText(), "Crusader C1 Spirit")
+        dialog.star_citizen.setChecked(False)
+        self.assertFalse(view.isVisible())
+        dialog.deleteLater()
+
+    def test_ship_mapping_table_shows_uex_suggestion_and_allows_manual_correction(self):
+        from PySide6.QtWidgets import QPushButton, QTableWidget
+        from voxcomm.skills.star_citizen import database
+        from voxcomm.skills.star_citizen.gamelog import ships
+
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {"XDG_DATA_HOME": root}):
+            database.replace_snapshot({"vehicles": [
+                {"id": 4, "name": "C1 Spirit", "company_name": "Crusader Industries"},
+                {"id": 5, "name": "85X", "company_name": "Origin Jumpworks"},
+            ]})
+            ships.collect_lines(["| CRUS_Spirit_C1_123456[123456]|CSCItemNavigation::GetRoute|"])
+            ships.save_match("CRUS_Spirit_C1", {"id": 4, "name": "C1 Spirit", "manufacturer": "Crusader Industries"}, "llm")
+            dialog = SettingsDialog(AppConfig(enabled_tools={"__global__": ["star_citizen"]}))
+            dialog.observed_ships_button.click()
+            view = dialog._ships_dialog
+            table = view.findChild(QTableWidget, "observed_ships_table")
+            self.assertEqual([table.item(0, col).text() for col in range(4)],
+                             ["CRUS_Spirit_C1", "Crusader Industries", "C1 Spirit", "LLM suggestion"])
+            table.selectRow(0)
+            with patch("voxcomm.app.QInputDialog.getItem", return_value=("Origin Jumpworks - 85X [5]", True)):
+                button = next(widget for widget in view.findChildren(QPushButton) if widget.text() == "Change mapping")
+                button.click()
+            self.assertEqual([table.item(0, col).text() for col in range(4)],
+                             ["CRUS_Spirit_C1", "Origin Jumpworks", "85X", "Manual"])
+            self.assertEqual(ships.list_matches()["CRUS_Spirit_C1"]["source"], "manual")
+            dialog.close()
+            dialog.deleteLater()
+
+    def test_uex_cache_refresh_at_startup_requires_an_existing_authorized_profile(self):
+        app = QApplication.instance() or QApplication([])
+        cases = (
+            (AppConfig(), 0),
+            (AppConfig(enabled_tools={"__global__": ["star_citizen_log"]}), 0),
+            (AppConfig(special_prompts={"Current": ""}, enabled_tools={
+                "Current": ["star_citizen_log"], "Deleted": ["star_citizen_uex", "star_citizen"],
+            }), 0),
+            (AppConfig(enabled_tools={"__global__": ["star_citizen_uex"]}), 1),
+            (AppConfig(enabled_tools={"__global__": ["star_citizen"]}), 1),
+            (AppConfig(special_prompts={"Current": ""}, enabled_tools={"Current": ["star_citizen_uex"]}), 1),
+            (AppConfig(special_prompts={"Current": ""}, enabled_tools={"Current": ["star_citizen"]}), 1),
+            (AppConfig(special_prompts={"Current": ""}, enabled_tools={
+                "__global__": ["star_citizen_uex"], "Current": ["star_citizen"],
+            }), 1),
+        )
+        for config, expected_calls in cases:
+            with self.subTest(config=config), patch("voxcomm.app.load_config", return_value=config), \
+                    patch("voxcomm.app.PttListener"), \
+                    patch("voxcomm.app.database.start_refresh_if_due", create=True) as refresh:
+                overlay = Overlay()
+                self.assertEqual(refresh.call_count, expected_calls)
+                overlay.listener.stop()
+                overlay.tray_icon.hide()
+                overlay.deleteLater()
+
+    def test_uex_cache_refresh_is_not_repeated_when_settings_change(self):
+        app = QApplication.instance() or QApplication([])
+        for initially_authorized in (False, True):
+            config = AppConfig(enabled_tools={"__global__": ["star_citizen_uex"]} if initially_authorized else {})
+            with self.subTest(initially_authorized=initially_authorized), \
+                    patch("voxcomm.app.load_config", return_value=config), patch("voxcomm.app.PttListener"), \
+                    patch("voxcomm.app.save_config"), \
+                    patch("voxcomm.app.database.start_refresh_if_due", create=True) as refresh:
+                overlay = Overlay()
+                config.enabled_tools = {} if initially_authorized else {"__global__": ["star_citizen_uex"]}
+                dialog = Mock()
+                dialog.apply.return_value = config
+                overlay._save_settings(dialog)
+                overlay._save_settings(dialog)
+                self.assertEqual(refresh.call_count, int(initially_authorized))
+                overlay.listener.stop()
+                overlay.tray_icon.hide()
+                overlay.deleteLater()
 
     def test_settings_controls_use_native_style_and_editor_frames(self):
         app = QApplication.instance() or QApplication([])
@@ -1231,6 +1394,24 @@ class ApplicationLifecycleTests(unittest.TestCase):
         self.assertEqual(game_event_reply(updated.input_reply_overrides, NAV_TARGET_SET, "Star Citizen", "CS"), "Cíl")
         dialog.deleteLater()
 
+    def test_unknown_signature_checkbox_and_profile_reply_are_saved(self):
+        app = QApplication.instance() or QApplication([])
+        config = AppConfig(special_prompts={"Star Citizen": ""}, enabled_tools={"Star Citizen": ["star_citizen_log"]})
+        dialog = SettingsDialog(config)
+        dialog.special_profile.setCurrentIndex(dialog.special_profile.findData("Star Citizen"))
+        dialog._announce_checks[QUANTUM_SIGNATURE_UNKNOWN].setChecked(False)
+        field = dialog._game_reply_fields[QUANTUM_SIGNATURE_UNKNOWN]
+        field.setText("{EN} Contact: {ship}.")
+        field.textEdited.emit(field.text())
+        updated = dialog.apply(config)
+        self.assertFalse(updated.game_announce_quantum_signature_unknown)
+        self.assertEqual(game_event_reply(updated.input_reply_overrides, QUANTUM_SIGNATURE_UNKNOWN,
+                                          "Star Citizen", "EN", "Origin 85X"), "Contact: Origin 85X.")
+        self.assertEqual(game_event_reply(updated.input_reply_overrides, QUANTUM_SIGNATURE_UNKNOWN,
+                                          "__global__", "EN", "Origin 85X"),
+                         "Unknown quantum signature detected: Origin 85X.")
+        dialog.deleteLater()
+
     def test_invalid_announcement_draft_survives_switch_and_blocks_save(self):
         app = QApplication.instance() or QApplication([])
         dialog = SettingsDialog(AppConfig(special_prompts={"Star Citizen": ""},
@@ -1465,12 +1646,14 @@ class ApplicationLifecycleTests(unittest.TestCase):
             self.assertEqual(len(lines), 10000)
             self.assertEqual((lines[0], lines[-1]), ("raw line 10", "raw line 10009"))
             with path.open("a", encoding="utf-8") as handle:
-                handle.write("new raw line\nSuccessfully calculated route to ArcCorp fuel estimate 42.0\n")
+                handle.write("new raw line\nYou have joined channel 'C1 : Player'\n"
+                             "ClearDriver: Local client node [99] releasing control token for 'CRUS_Spirit_C1_123456' [123456]\n"
+                             "| CRUS_Spirit_C1_123456[123456]|CSCItemNavigation::CalculateRoute|Successfully calculated route to ArcCorp fuel estimate 42.0\n")
             dialog._refresh_game_log()
             self._wait_for_raw_game_log(app, dialog)
             lines = dialog.game_log_view.toPlainText().splitlines()
             self.assertEqual(len(lines), 10000)
-            self.assertEqual(lines[0], "raw line 12")
+            self.assertEqual(lines[0], "raw line 14")
             self.assertIn("new raw line", lines)
             path.write_text("new session\n", encoding="utf-8")
             dialog._refresh_game_log()

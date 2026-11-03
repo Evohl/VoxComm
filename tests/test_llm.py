@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 
 import httpx
 
+from voxcomm.i18n import current_language, set_language
 from voxcomm.providers.llm import (
     _THINKING_CACHE, _dated_search_query, _request_stream, _thinking_values, chat, list_models,
     thinking_options, thinking_request_value,
@@ -617,6 +618,23 @@ class ModelDiscoveryTests(unittest.TestCase):
         )
         press.assert_not_called()
         request.assert_not_called()
+
+    @patch("voxcomm.providers.llm.press_gamepad_button")
+    def test_scripted_messages_use_reply_language_instead_of_ui_language(self, press):
+        set_language("de")
+        self.addCleanup(set_language, "en")
+        catalog = "[pilot seat yes]\nFlight Systems On => flight ready => Button1 => {EN} enabled"
+        common = dict(enabled_tools=["input_control"], controller_mode="script", input_actions=catalog,
+                      reply_language="English")
+        blocked = chat("ollama", "http://localhost", "model", "flight ready",
+                       game_state={"pilot_seat": False}, **common)
+        unknown = chat("ollama", "http://localhost", "model", "flight ready", game_state={}, **common)
+        unmatched = chat("ollama", "http://localhost", "model", "dance", **common)
+        self.assertEqual(blocked, "Captain, ship controls are unavailable until you take the pilot seat.")
+        self.assertIn("pilot-seat status is unknown", unknown)
+        self.assertEqual(unmatched, "Captain, command not recognized. Please repeat the command.")
+        self.assertEqual(current_language(), "de")
+        press.assert_not_called()
 
     @patch("voxcomm.providers.llm.press_gamepad_button", return_value="Button5")
     @patch("voxcomm.providers.llm._request")

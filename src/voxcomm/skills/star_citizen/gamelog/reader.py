@@ -16,22 +16,28 @@ class LogReader:
         self._initial_tail_bytes = initial_tail_bytes
         self._offset: int | None = None
         self._partial = b""
+        self._identity: tuple[int, int] | None = None
+        self.was_reset = False
 
     def read_new_lines(self) -> list[str]:
+        self.was_reset = False
         try:
-            size = self.path.stat().st_size
+            with self.path.open("rb") as handle:
+                stat = os.fstat(handle.fileno())
+                identity = (stat.st_dev, stat.st_ino)
+                drop_fragment = False
+                if self._offset is None:
+                    self._offset = max(0, stat.st_size - self._initial_tail_bytes)
+                    drop_fragment = self._offset > 0
+                elif identity != self._identity or stat.st_size < self._offset:
+                    self._offset = 0
+                    self._partial = b""
+                    self.was_reset = True
+                self._identity = identity
+                handle.seek(self._offset)
+                data = handle.read()
         except OSError:
             return []
-        drop_fragment = False
-        if self._offset is None:
-            self._offset = max(0, size - self._initial_tail_bytes)
-            drop_fragment = self._offset > 0
-        elif size < self._offset:
-            self._offset = 0
-            self._partial = b""
-        with self.path.open("rb") as handle:
-            handle.seek(self._offset)
-            data = handle.read()
         self._offset += len(data)
         data = self._partial + data
         if drop_fragment:

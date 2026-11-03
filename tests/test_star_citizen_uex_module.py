@@ -7,7 +7,7 @@ import pytest
 
 import voxcomm.providers.uex as legacy_uex
 from voxcomm.providers.llm import _execute_tool, query_uex
-from voxcomm.skills.star_citizen import uex as skill_uex
+from voxcomm.skills.star_citizen import database, uex as skill_uex
 from voxcomm.skills.star_citizen.tool import UEX_OPERATIONS
 
 
@@ -49,15 +49,19 @@ def test_legacy_httpx_patch_is_visible_from_skill_module():
         ({"star_citizen"}, True),
     ],
 )
-def test_shared_implementation_respects_dispatch_permissions(permissions, allowed):
+def test_shared_implementation_respects_dispatch_permissions(permissions, allowed, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    database.replace_snapshot({"terminals": [{"name": "Levski"}]})
     call = {"function": {"name": "star_citizen", "arguments": {
         "operation": "terminals", "query": "Levski",
     }}}
-    with patch("voxcomm.providers.uex._request_data", return_value=[{"name": "Levski"}]) as request:
+    with patch.object(database, "read_snapshot", wraps=database.read_snapshot) as read, \
+         patch("voxcomm.providers.uex._request_data", side_effect=AssertionError("network")) as request:
         result = json.loads(_execute_tool(call, permissions))
+    request.assert_not_called()
     if allowed:
-        request.assert_called_once()
+        read.assert_called_once_with()
         assert result["matches"] == [{"name": "Levski"}]
     else:
-        request.assert_not_called()
+        read.assert_not_called()
         assert result == {"error": "Tool is not enabled"}

@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import Mock, call
 
 from voxcomm.action_catalog import parse_action_catalog
+from voxcomm.i18n import current_language, set_language, tr
 from voxcomm.skills.controller.tool import (
     INPUT_CONTROL_TOOL,
     _input_control_tool,
@@ -56,6 +57,23 @@ class ControllerSkillTests(unittest.TestCase):
         self.assertEqual(_precondition_message(actions, {"pilot_seat": True}), "")
         self.send.assert_not_called()
 
+    def test_precondition_language_is_independent_of_ui_language(self):
+        set_language("de")
+        self.addCleanup(set_language, "en")
+        self.assertEqual(
+            _precondition_message(tuple(self.actions), {"pilot_seat": False}, "English"),
+            "Captain, ship controls are unavailable until you take the pilot seat.",
+        )
+        self.assertEqual(current_language(), "de")
+        self.assertEqual(tr("Settings"), "Einstellungen")
+
+        set_language("en")
+        self.assertEqual(
+            _precondition_message(tuple(self.actions), {"pilot_seat": False}, "German"),
+            "Captain, Schiffssteuerung nicht verfügbar. Nimm zuerst den Pilotensitz ein.",
+        )
+        self.assertIn("status is unknown", _precondition_message(tuple(self.actions), {}, "French"))
+
     def test_script_actions_send_in_order_and_join_replies(self):
         result = _press_actions(tuple(self.actions), "English", send=self.send)
         self.assertEqual(result, "Lights on. Boost on.")
@@ -66,6 +84,14 @@ class ControllerSkillTests(unittest.TestCase):
         result = _press_actions(tuple(self.actions), "English", send=self.send)
         self.assertEqual(result, "Captain, controller input was not sent: unavailable")
         self.send.assert_called_once_with("Button1", hold=False)
+
+    def test_send_failure_uses_reply_language_not_ui_language(self):
+        set_language("de")
+        self.addCleanup(set_language, "en")
+        self.send.side_effect = RuntimeError("unavailable")
+        self.assertEqual(_press_actions(tuple(self.actions), "English", send=self.send),
+                         "Captain, controller input was not sent: unavailable")
+        self.assertEqual(current_language(), "de")
 
     def test_script_actions_stop_when_cancelled_during_first_press(self):
         cancelled = threading.Event()

@@ -42,6 +42,7 @@ class ConfigTests(unittest.TestCase):
                 tray_mode=True,
                 game_announce_ship_entered=False,
                 game_announce_pilot_left=False,
+                game_announce_quantum_signature_unknown=False,
                 overlay_x=-150,
                 overlay_y=250,
                 voice_language="de",

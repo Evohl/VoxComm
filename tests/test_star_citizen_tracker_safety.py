@@ -17,12 +17,13 @@ from voxcomm.skills.star_citizen.gamelog.facts import (
 
 JOIN = "You have joined channel 'Ship : Player'"
 LEAVE = "You have left the channel 'Ship : Player'"
-PILOT = "Failed to get starmap route data! No Route loaded"
+EXIT = "ClearDriver: Local client node [99] releasing control token for 'CRUS_Spirit_C1_123456' [123456]"
+PILOT = "Failed to get starmap route data! | CRUS_Spirit_C1_123456[123456]|CSCItemNavigation::GetRoute|No Route loaded"
 
 
 def test_leaving_ship_revokes_pilot_only_control():
     facts = GameFacts()
-    assert facts.apply([JOIN, PILOT]) == [SHIP_ENTERED, PILOT_TAKEN]
+    assert facts.apply([JOIN, EXIT, PILOT]) == [SHIP_ENTERED, PILOT_LEFT, PILOT_TAKEN]
     actions = tuple(parse_action_catalog(
         "[pilot seat yes]\n"
         "Boost On => boost on => Button2 => {EN} Boost on. | {DE} Schub an."
@@ -43,7 +44,7 @@ def test_concurrent_polls_serialize_reader_and_preserve_cursor(monkeypatch, tmp_
     reader_lock = Lock()
     active_reads = [0]
     cursor = [0]
-    lines = [JOIN, PILOT]
+    lines = [[JOIN, EXIT], [PILOT]]
 
     def read_new_lines():
         with reader_lock:
@@ -56,7 +57,7 @@ def test_concurrent_polls_serialize_reader_and_preserve_cursor(monkeypatch, tmp_
                 first_read_started.set()
                 assert release_first_read.wait(5)
             cursor[0] = position + 1
-            return [lines[position]] if position < len(lines) else []
+            return lines[position] if position < len(lines) else []
         finally:
             with reader_lock:
                 active_reads[0] -= 1
@@ -101,8 +102,8 @@ def test_snapshots_and_events_wait_for_complete_poll(monkeypatch, tmp_path):
     original_apply = GameFacts.apply
 
     def paused_apply(self, lines):
-        if lines == [JOIN, PILOT]:
-            events = original_apply(self, [JOIN])
+        if lines == [JOIN, EXIT, PILOT]:
+            events = original_apply(self, [JOIN, EXIT])
             applying.set()
             assert release_apply.wait(5)
             return events + original_apply(self, [PILOT])
@@ -110,7 +111,7 @@ def test_snapshots_and_events_wait_for_complete_poll(monkeypatch, tmp_path):
 
     monkeypatch.setattr(GameFacts, "apply", paused_apply)
     monkeypatch.setattr(facts_module, "LogReader", lambda path: Mock(
-        read_new_lines=Mock(side_effect=[[], [JOIN, PILOT]])
+        read_new_lines=Mock(side_effect=[[], [JOIN, EXIT, PILOT]])
     ))
     monkeypatch.setattr(facts_module, "log_path_from_executable", lambda executable: tmp_path / "Game.log")
     tracker = GameLogTracker(executable_finder=lambda: "game.exe")
@@ -147,6 +148,6 @@ def test_snapshots_and_events_wait_for_complete_poll(monkeypatch, tmp_path):
 
     assert (old_snapshot.in_ship, old_snapshot.pilot_seat) == (None, None)
     assert (new_snapshot.in_ship, new_snapshot.pilot_seat) == (True, True)
-    assert events == [SHIP_ENTERED, PILOT_TAKEN]
+    assert events == [SHIP_ENTERED, PILOT_LEFT, PILOT_TAKEN]
     new_snapshot.pilot_seat = False
     assert tracker.facts.pilot_seat is True

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import signal
+import sqlite3
 import threading
 import time
 from collections import deque
@@ -11,9 +12,9 @@ from datetime import datetime
 from PySide6.QtCore import QEvent, QObject, QPoint, QPropertyAnimation, QRect, QSize, QTimer, Signal, Qt
 from PySide6.QtGui import QAction, QFont, QGuiApplication, QIcon, QPalette, QTextCharFormat
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QFormLayout, QFrame, QGraphicsOpacityEffect, QGridLayout,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFormLayout, QFrame, QGraphicsOpacityEffect, QGridLayout, QHeaderView,
     QHBoxLayout, QLabel, QInputDialog, QLineEdit, QMainWindow, QMenu, QMessageBox,
-    QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QSystemTrayIcon, QTabWidget, QTextEdit,
+    QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QSystemTrayIcon, QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit,
     QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -24,7 +25,7 @@ from voxcomm.config import (
     AppConfig, load_config, reply_override_key, reply_overrides_for_profile, save_config, save_overlay_position,
     split_reply_override_key,
 )
-from voxcomm.i18n import SUPPORTED_LANGUAGES, set_language, tr
+from voxcomm.i18n import SUPPORTED_LANGUAGES, set_language, tr, tr_for_language
 from voxcomm.mangohud import publish_status
 from voxcomm.providers import cloud, openai_tts, whisper_cpp
 from voxcomm.providers.llm import chat, list_models, thinking_options
@@ -32,11 +33,15 @@ from voxcomm.providers.wyoming import filter_voices, list_voices, speak_stream_s
 from voxcomm.prompts import VOICE_LANGUAGE_NAMES, build_system_prompt
 from voxcomm.ptt import PttListener, capture_input
 from voxcomm.profiles import output_language, resolve_profile
+from voxcomm.skills.star_citizen import database
+from voxcomm.skills.star_citizen.connection import ship_connection_command
 from voxcomm.skills.star_citizen.events import (
     GAME_ANNOUNCE_FIELDS, GAME_EVENT_TEXT, game_event_reply, game_reply_action, game_reply_defaults,
 )
 from voxcomm.skills.star_citizen.gamelog import GameFacts, GameLogTracker
+from voxcomm.skills.star_citizen.gamelog.facts import PILOT_LEFT, PILOT_TAKEN, QUANTUM_SIGNATURE_UNKNOWN
 from voxcomm.skills.star_citizen.gamelog.reader import RecentLogReader
+from voxcomm.skills.star_citizen.gamelog import ship_matching, ships
 from voxcomm.skills.star_citizen.tool import (
     STAR_CITIZEN_LEGACY, STAR_CITIZEN_LOG, STAR_CITIZEN_UEX, allows_game_log, allows_uex,
 )
@@ -318,6 +323,8 @@ class SettingsDialog(QDialog):
         self.star_citizen_uex = QCheckBox(tr("Star Citizen UEX"))
         self.star_citizen_uex.setToolTip(tr("Allows this profile to query UEX community data for commodities, terminals, prices and trade routes."))
         self.star_citizen_uex.setChecked(allows_uex(self.enabled_tools.get(active_profile, [])))
+        self.star_citizen_uex.toggled.connect(lambda _enabled: self._close_observed_ships())
+        self.special_profile.currentIndexChanged.connect(lambda _index: self._close_observed_ships())
         self.controller_mode = QComboBox()
         self.controller_mode.addItem(tr("Hybrid: script, LLM on keyword"), "hybrid")
         self.controller_mode.addItem(tr("Script only"), "script")
@@ -409,6 +416,9 @@ class SettingsDialog(QDialog):
         self.game_log_view.setMaximumBlockCount(GAME_LOG_RAW_LINES)
         self.game_log_unfiltered = QCheckBox(tr("Unfiltered Game.log (up to 10,000 lines)"))
         self.game_log_unfiltered.toggled.connect(self._game_log_mode_changed)
+        self.observed_ships_button = QPushButton(tr("Observed ships"))
+        self.observed_ships_button.clicked.connect(self._show_observed_ships)
+        self._ships_dialog = None
         self.game_status_view = QLabel("\n".join(_game_status_lines(GameFacts())))
         self.game_status_view.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.game_status_view.setWordWrap(True)
@@ -416,7 +426,7 @@ class SettingsDialog(QDialog):
         self._game_reply_fields = {}
         self._game_reply_drafts = {}
         announcement_rows = []
-        announcement_scope = tr("The checkboxes apply to all profiles. Reply texts are saved per profile. Star Citizen Log must be enabled for the active profile.")
+        announcement_scope = tr("The checkboxes apply to all profiles. Reply texts are saved per profile. Star Citizen Log must be enabled for the relevant profile.")
         for event, field_name in GAME_ANNOUNCE_FIELDS.items():
             check = QCheckBox(tr(GAME_EVENT_TEXT[event]))
             check.setToolTip(announcement_scope)
@@ -430,7 +440,12 @@ class SettingsDialog(QDialog):
             row = QHBoxLayout()
             row.setContentsMargins(0, 0, 0, 0)
             row.setSpacing(8)
-            row.addWidget(check)
+            if event == PILOT_TAKEN:
+                label = QLabel(tr("Ship computer connection (voice command)"))
+                label.setMinimumWidth(250)
+                row.addWidget(label)
+            else:
+                row.addWidget(check)
             row.addWidget(field, 1)
             announcement_rows.append((None, row))
         self._load_game_reply_text()
@@ -440,6 +455,7 @@ class SettingsDialog(QDialog):
             None,
             [(None, self.audio_confirmation_heading)]
             + announcement_rows + [(tr("Game status"), self.game_status_view),
+                                   (None, self.observed_ships_button),
                                    (None, self.game_log_unfiltered),
                                    (tr("Star Citizen Log") + ":", self.game_log_view)])
         self.game_log_section.setVisible(self.star_citizen.isChecked())
@@ -1316,7 +1332,8 @@ class SettingsDialog(QDialog):
         self._game_log.poll()
         stamp = datetime.now().strftime("%H:%M:%S")
         for event in self._game_log.take_events():
-            self._game_log_events.append(f"{stamp}  {tr(GAME_EVENT_TEXT[event])}")
+            name = getattr(event, "ship", "")
+            self._game_log_events.append(f"{stamp}  {tr(GAME_EVENT_TEXT[event])}" + (f": {name}" if name else ""))
         self.game_status_view.setText("\n".join(_game_status_lines(self._game_log.facts)))
         if self.game_log_unfiltered.isChecked():
             path = self._game_log.path
@@ -1351,8 +1368,129 @@ class SettingsDialog(QDialog):
                                            else QPlainTextEdit.LineWrapMode.WidgetWidth)
         self._refresh_game_log()
 
+    def _show_observed_ships(self):
+        if not self.star_citizen.isChecked():
+            return
+        try:
+            entries = ships.list_names()
+        except (OSError, sqlite3.Error) as error:
+            QMessageBox.warning(self, tr("Observed ships"), str(error))
+            return
+        if self._ships_dialog is not None:
+            self._ships_dialog.close()
+        dialog = QDialog(self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.setWindowTitle(tr("Observed ships"))
+        dialog.resize(900, 520)
+        layout = QVBoxLayout(dialog)
+        table = QTableWidget(0, 4)
+        table.setObjectName("observed_ships_table")
+        table.setHorizontalHeaderLabels([tr("Log class"), tr("Manufacturer"), tr("UEX ship"), tr("Status")])
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        table.verticalHeader().setVisible(False)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(table, 1)
+        layout.addWidget(QLabel(tr("Channel names")))
+        channels = QPlainTextEdit("\n".join(name for kind, name in entries if kind == "channel"))
+        channels.setObjectName("observed_ships_channel")
+        channels.setReadOnly(True)
+        channels.setMaximumHeight(90)
+        channels.setPlaceholderText(tr("No entries yet"))
+        layout.addWidget(channels)
+        controls = QHBoxLayout()
+        change_button = QPushButton(tr("Change mapping"))
+        change_button.setEnabled(self.star_citizen_uex.isChecked())
+        controls.addWidget(change_button)
+        retry_button = QPushButton(tr("Retry unidentified"))
+        retry_button.setEnabled(self.star_citizen_uex.isChecked())
+        controls.addWidget(retry_button)
+        controls.addStretch(1)
+        close_button = QPushButton(tr("Close"))
+        close_button.clicked.connect(dialog.close)
+        controls.addWidget(close_button)
+        layout.addLayout(controls)
+
+        def refresh():
+            try:
+                names = ships.list_names()
+                matches = ships.list_matches() if self.star_citizen_uex.isChecked() else {}
+                available = database.last_updated() is not None if self.star_citizen_uex.isChecked() else False
+            except (OSError, sqlite3.Error):
+                return
+            classes = [name for kind, name in names if kind == "class"]
+            signature = (tuple(names), available, tuple((name, tuple(sorted(value.items()))) for name, value in sorted(matches.items())))
+            if getattr(table, "_ships_signature", None) == signature:
+                return
+            selected = table.currentRow()
+            table.setRowCount(len(classes))
+            for index, name in enumerate(classes):
+                match = matches.get(name, {})
+                source = match.get("source")
+                status = (tr("UEX disabled") if not self.star_citizen_uex.isChecked() else
+                          tr("UEX unavailable") if not available else
+                          tr("Manual") if source == "manual" else tr("LLM suggestion") if match.get("id") is not None else
+                          tr("Not identified") if source == "llm" else tr("Pending"))
+                for column, value in enumerate((name, match.get("manufacturer") or "", match.get("name") or "", status)):
+                    table.setItem(index, column, QTableWidgetItem(value))
+            if 0 <= selected < len(classes):
+                table.selectRow(selected)
+            table._ships_signature = signature
+            channels.setPlainText("\n".join(name for kind, name in names if kind == "channel"))
+
+        def change_mapping():
+            row = table.currentRow()
+            if row < 0 or not self.star_citizen_uex.isChecked():
+                return
+            log_name = table.item(row, 0).text()
+            profile = self._active_profile_name
+            try:
+                with database.read_snapshot() as snapshot:
+                    vehicles = snapshot.read_resource("vehicles") if snapshot and snapshot.last_updated() is not None else []
+                options = ship_matching.catalog(vehicles)
+                labels = {f"{vehicle['manufacturer']} - {vehicle['name']} [{vehicle['id']}]": vehicle for vehicle in options}
+                labels = dict(sorted(labels.items(), key=lambda entry: entry[0].casefold()))
+                empty = tr("No mapping")
+                selected, accepted = QInputDialog.getItem(dialog, tr("Change mapping"), tr("UEX ship"),
+                                                          [empty, *labels], 0, True)
+                if (accepted and self.star_citizen.isChecked() and self.star_citizen_uex.isChecked()
+                        and self._active_profile_name == profile and (selected == empty or selected in labels)):
+                    ships.save_match(log_name, labels.get(selected), "manual")
+                    refresh()
+            except (OSError, sqlite3.Error) as error:
+                QMessageBox.warning(dialog, tr("Observed ships"), str(error))
+
+        def retry_unidentified():
+            if not self.star_citizen_uex.isChecked():
+                return
+            try:
+                ships.retry_unidentified()
+                refresh()
+            except (OSError, sqlite3.Error) as error:
+                QMessageBox.warning(dialog, tr("Observed ships"), str(error))
+
+        change_button.clicked.connect(change_mapping)
+        retry_button.clicked.connect(retry_unidentified)
+        table.cellDoubleClicked.connect(lambda _row, _column: change_mapping())
+        refresh()
+        refresh_timer = QTimer(dialog)
+        refresh_timer.setInterval(2000)
+        refresh_timer.timeout.connect(refresh)
+        refresh_timer.start()
+        self._ships_dialog = dialog
+        dialog.finished.connect(lambda _result: setattr(self, "_ships_dialog", None)
+                    if self._ships_dialog is dialog else None)
+        dialog.show()
+
+    def _close_observed_ships(self):
+        if getattr(self, "_ships_dialog", None) is not None:
+            self._ships_dialog.close()
+
     def _game_log_permission_changed(self, enabled: bool):
         if not enabled:
+            if self._ships_dialog is not None:
+                self._ships_dialog.close()
             self._raw_log_generation += 1
             self._raw_log_reader = None
             self._game_log_text = ""
@@ -1483,7 +1621,12 @@ class Overlay(QMainWindow):
     def __init__(self):
         super().__init__()
         self._game_log = GameLogTracker()
+        self._ship_collector = ships.ShipLogCollector()
+        self._ship_matcher = ship_matching.ShipMatchWorker()
         self.config = load_config()
+        if any(allows_uex(self.config.enabled_tools.get(profile, []))
+               for profile in ("__global__", *self.config.special_prompts)):
+            database.start_refresh_if_due()
         self._settings_dialog = None
         set_language(self.config.ui_language)
         self.events = Events()
@@ -1581,6 +1724,8 @@ class Overlay(QMainWindow):
         self._hide_after_typing = False
         self._buttons_visible = True
         self._speech_jobs = 0
+        self._pending_pilot_left_ship = None
+        self._pending_quantum_signatures = deque(maxlen=20)
         self._speech_cancel = None
         self._recording = False
         self._capture_stop = None
@@ -1601,6 +1746,10 @@ class Overlay(QMainWindow):
         self._game_log_timer.setInterval(GAME_LOG_POLL_MS)
         self._game_log_timer.timeout.connect(self._poll_game_log)
         self._game_log_timer.start()
+        self._ship_match_timer = QTimer(self)
+        self._ship_match_timer.setInterval(15000)
+        self._ship_match_timer.timeout.connect(lambda: self._ship_matcher.start_if_due(lambda: self.config))
+        self._ship_match_timer.start()
         self._fit_to_content()
         self._restore_overlay_position()
         self._tray_recording = False
@@ -1869,10 +2018,12 @@ class Overlay(QMainWindow):
             enabled_tools = list(resolved_profile.enabled_tools)
             game_context = ""
             game_state = None
+            connection = None
             if allows_game_log(enabled_tools):
                 game_context = self._game_log.prompt_context()
                 game_facts = self._game_log.facts
                 game_state = {"in_ship": game_facts.in_ship, "pilot_seat": game_facts.pilot_seat}
+                connection = ship_connection_command(text)
             # Mit Websuche kann die Antwort nachträglich ersetzt werden, daher erst nach der fertigen Antwort sprechen.
             speech = None
             if resolved_profile.auto_speak and "web_search" not in enabled_tools:
@@ -1881,33 +2032,42 @@ class Overlay(QMainWindow):
                         speech, cancel_event, profile_voice, reply_language))
             streamed = []
             try:
-                answer = chat(
-                    self.config.llm_provider,
-                    self.config.llm_url,
-                    profile_model,
-                    text,
-                    system_prompt=build_system_prompt(
-                        special_prompt_name=profile_name,
-                        special_prompt=resolved_profile.special_prompt,
-                        response_language=reply_language,
-                        global_prompt=resolved_profile.global_prompt,
-                        extra_context=game_context,
-                    ),
-                    enabled_tools=enabled_tools,
-                    input_actions=resolved_profile.action_catalog,
-                    api_key=self.config.ollama_api_key,
-                    cancel_event=cancel_event,
-                    on_text=(lambda delta: (streamed.append(delta), speech.feed(delta))) if speech else None,
-                    thinking=resolved_profile.thinking,
-                    on_status=lambda status: self.events.activity.emit(status, cancel_event),
-                    reply_language=reply_language,
-                    controller_mode=self.config.controller_mode,
-                    llm_keyword=self.config.controller_llm_keyword,
-                    game_state=game_state,
-                    reply_overrides=reply_overrides_for_profile(
-                        self.config.input_reply_overrides, profile_key),
-                    profile_key=profile_key,
-                )
+                if connection is not None and not cancel_event.is_set():
+                    ship = self._game_log.set_ship_connection(connection)
+                    event = PILOT_TAKEN if connection else PILOT_LEFT
+                    tag = reply_language_tag(reply_language) or "EN"
+                    answer = (tr_for_language("Captain, Star Citizen is not running.", tag) if ship is None
+                              else game_event_reply(self.config.input_reply_overrides, event, profile_key, tag, ship))
+                elif not cancel_event.is_set():
+                    answer = chat(
+                        self.config.llm_provider,
+                        self.config.llm_url,
+                        profile_model,
+                        text,
+                        system_prompt=build_system_prompt(
+                            special_prompt_name=profile_name,
+                            special_prompt=resolved_profile.special_prompt,
+                            response_language=reply_language,
+                            global_prompt=resolved_profile.global_prompt,
+                            extra_context=game_context,
+                        ),
+                        enabled_tools=enabled_tools,
+                        input_actions=resolved_profile.action_catalog,
+                        api_key=self.config.ollama_api_key,
+                        cancel_event=cancel_event,
+                        on_text=(lambda delta: (streamed.append(delta), speech.feed(delta))) if speech else None,
+                        thinking=resolved_profile.thinking,
+                        on_status=lambda status: self.events.activity.emit(status, cancel_event),
+                        reply_language=reply_language,
+                        controller_mode=self.config.controller_mode,
+                        llm_keyword=self.config.controller_llm_keyword,
+                        game_state=game_state,
+                        reply_overrides=reply_overrides_for_profile(
+                            self.config.input_reply_overrides, profile_key),
+                        profile_key=profile_key,
+                    )
+                else:
+                    return
                 if speech is not None and not streamed and not cancel_event.is_set():
                     speech.feed(answer)
             finally:
@@ -2075,18 +2235,39 @@ class Overlay(QMainWindow):
         profile = next((name for name in (*sorted(self.config.special_prompts, key=str.casefold), "__global__")
                         if allows_game_log(self.config.enabled_tools.get(name, []))), None)
         if profile is None:
+            self._pending_pilot_left_ship = None
+            self._pending_quantum_signatures.clear()
             return
         self._game_log.poll()
+        if self._game_log.path:
+            self._ship_collector.scan(self._game_log.path)
         events = [event for event in self._game_log.take_events()
-                  if getattr(self.config, GAME_ANNOUNCE_FIELDS[event])]
-        # Laufende Antworten nicht unterbrechen; Meldungen während der Ausgabe entfallen.
-        if not events or self._speech_jobs:
+                  if event != PILOT_TAKEN and getattr(self.config, GAME_ANNOUNCE_FIELDS[event])]
+        if not self.config.game_announce_quantum_signature_unknown:
+            self._pending_quantum_signatures.clear()
+        if self._pending_pilot_left_ship is not None and (
+            self._game_log.connected_ship[0] or not self.config.game_announce_pilot_left
+        ):
+            self._pending_pilot_left_ship = None
+        ship = self._game_log.facts.ship
+        if self._speech_jobs:
+            self._pending_quantum_signatures.extend(event for event in events if event == QUANTUM_SIGNATURE_UNKNOWN)
+            if PILOT_LEFT in events:
+                self._pending_pilot_left_ship = ship
+            return
+        events = list(self._pending_quantum_signatures) + events
+        self._pending_quantum_signatures.clear()
+        if self._pending_pilot_left_ship is not None:
+            ship = self._pending_pilot_left_ship
+            self._pending_pilot_left_ship = None
+            if PILOT_LEFT not in events:
+                events.insert(0, PILOT_LEFT)
+        if not events:
             return
         voice = self.config.profile_voices.get(profile, "")
         tag = reply_language_tag(self._response_language_for_profile(profile, voice)) or "EN"
-        ship = self._game_log.facts.ship
         text = " ".join(
-            game_event_reply(self.config.input_reply_overrides, event, profile, tag, ship)
+            game_event_reply(self.config.input_reply_overrides, event, profile, tag, getattr(event, "ship", ship))
             for event in events
         )
         tts_language = self._response_language_for_profile(profile, voice)

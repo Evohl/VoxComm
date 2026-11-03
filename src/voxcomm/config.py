@@ -54,6 +54,7 @@ class AppConfig:
     game_announce_pilot_left: bool = True
     game_announce_nav_target_set: bool = True
     game_announce_quantum_arrived: bool = True
+    game_announce_quantum_signature_unknown: bool = True
     overlay_hide_seconds: int = 10
     overlay_x: int | None = None
     overlay_y: int | None = None

@@ -17,10 +17,11 @@ from voxcomm.action_catalog import (
     classify_utterance,
     contains_keyword,
     parse_action_catalog,
+    reply_language_tag,
     resolve_utterance,
     unmet_requirement,
 )
-from voxcomm.i18n import tr
+from voxcomm.i18n import tr, tr_for_language
 from voxcomm.providers.cloud import CloudAuthError, list_cloud_models, web_search as cloud_web_search
 from voxcomm.providers.web import search_web
 from voxcomm.skills.controller.tool import (
@@ -392,7 +393,7 @@ def chat(
         try:
             input_action_entries = apply_reply_overrides(parse_action_catalog(input_actions), reply_overrides or {})
         except ValueError as error:
-            return tr("Captain, action catalog is invalid: {error}", error=error)
+            return tr_for_language("Captain, action catalog is invalid: {error}", reply_language_tag(reply_language), error=error)
     pending = None
     resolution = None
     clarification_key = (profile_key, input_actions)
@@ -402,20 +403,20 @@ def chat(
     if input_action_entries:
         pending = _take_clarification(clarification_key)
         if classification == "negated":
-            return tr("Captain, command not recognized. Please repeat the command.")
+            return tr_for_language("Captain, command not recognized. Please repeat the command.", reply_language_tag(reply_language))
         if classification == "question":
             pending = None
             if controller_mode == "script":
-                return tr("Captain, command not recognized. Please repeat the command.")
+                return tr_for_language("Captain, command not recognized. Please repeat the command.", reply_language_tag(reply_language))
         if not to_model and classification != "question":
             resolution = resolve_utterance(input_action_entries, prompt)
             if resolution.status == "match":
-                blocked = _precondition_message(resolution.actions, state)
+                blocked = _precondition_message(resolution.actions, state, reply_language)
                 if blocked:
                     return blocked
                 return _press_actions(resolution.actions, reply_language, cancelled=cancelled)
             if controller_mode == "script" or (resolution.status == "none" and pending is None):
-                return tr("Captain, command not recognized. Please repeat the command.")
+                return tr_for_language("Captain, command not recognized. Please repeat the command.", reply_language_tag(reply_language))
     if not model.strip():
         return tr("Captain, no language model is configured. Select a model in Settings.")
     base_url = base_url.rstrip("/")
@@ -478,7 +479,7 @@ def chat(
         if blocked_notes:
             input_note += (
                 " These actions are unavailable in the current game state; never call input_control for them. "
-                "Instead tell the user briefly, in the user's language, what must happen first: "
+                "Instead tell the user briefly, in the configured response language, what must happen first: "
                 + "; ".join(blocked_notes) + "."
             )
         if messages:

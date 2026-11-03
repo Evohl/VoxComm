@@ -244,6 +244,8 @@ def test_controller_web_and_uex_tool_selection_are_independent():
 @pytest.mark.parametrize("tools", [[], ["star_citizen_uex"], ["unknown_skill"]])
 def test_selected_profile_without_log_does_not_block_permitted_default(tools):
     overlay = Mock()
+    overlay._pending_pilot_left_ship = None
+    overlay._pending_quantum_signatures = []
     overlay.config = AppConfig(special_prompts={"Other": ""}, active_special_prompt="Other",
                                enabled_tools={"__global__": ["star_citizen_log"], "Other": tools})
     overlay._game_log.take_events.return_value = [SHIP_ENTERED]
@@ -259,6 +261,8 @@ def test_selected_profile_without_log_does_not_block_permitted_default(tools):
 @pytest.mark.parametrize("permission", ["star_citizen", "star_citizen_log"])
 def test_active_log_permission_polls_and_announces(permission):
     overlay = Mock()
+    overlay._pending_pilot_left_ship = None
+    overlay._pending_quantum_signatures = []
     overlay.config = AppConfig(enabled_tools={"__global__": [permission]})
     overlay._active_profile.return_value = "__global__"
     overlay._active_profile_voice.return_value = "voice"

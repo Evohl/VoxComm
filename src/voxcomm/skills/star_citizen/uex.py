@@ -14,17 +14,25 @@ OPERATIONS = {
     "terminals": "terminals",
     "prices": "commodities_prices",
     "routes": "commodities_routes",
+    "vehicles": "vehicles",
+    "vehicle_prices": "vehicles_prices",
+    "items": "items",
+    "item_prices": "items_prices_all",
+    "item_attributes": "items_attributes",
 }
 _TEXT_FIELDS = (
-    "name", "fullname", "nickname", "displayname", "code", "slug",
+    "name", "name_full", "fullname", "nickname", "displayname", "code", "slug",
     "commodity_name", "terminal_name", "terminal_origin_name", "terminal_destination_name",
+    "vehicle_name", "item_name", "company_name",
     "origin_terminal_name", "destination_terminal_name",
     "location_name", "star_system_name", "planet_name", "moon_name", "city_name",
     "outpost_name", "space_station_name", "orbit_name",
 )
 _CORE_RESULT_FIELDS = (
-    "id", "id_commodity", "name", "commodity_name", "terminal_name", "terminal_origin_name",
+    "id", "id_commodity", "name", "name_full", "company_name", "category", "size", "scu", "crew", "mass", "width", "height", "length", "commodity_name", "terminal_name", "terminal_origin_name",
     "terminal_destination_name", "origin_terminal_name", "destination_terminal_name",
+    "id_vehicle", "vehicle_name", "id_item", "item_name", "price_type", "currency",
+    "price_rent", "gross_price_spread", "terminal_game_version", "attribute_name", "value", "unit",
     "location_name", "star_system_name", "planet_name", "moon_name", "game_version", "version",
     "price", "price_buy", "price_sell", "price_origin", "price_destination",
     "date_modified", "date_added", "updated_at", "last_updated", "scu_buy", "scu_sell",
@@ -103,7 +111,7 @@ def _compact_rows(rows: list[dict]) -> list[dict]:
     return compact
 
 
-def query_uex(operation: str, query: str, location: str = "", *, get=httpx.get) -> dict:
+def query_uex(operation: str, query: str, location: str = "", *, get=None) -> dict:
     if operation not in OPERATIONS:
         raise ValueError("Choose a supported UEX data operation")
     if not isinstance(query, str) or not query.strip():
@@ -112,6 +120,11 @@ def query_uex(operation: str, query: str, location: str = "", *, get=httpx.get) 
     location = location.strip() if isinstance(location, str) else ""
     if len(query) > MAX_QUERY_LENGTH or len(location) > MAX_QUERY_LENGTH:
         raise ValueError(f"Search values cannot exceed {MAX_QUERY_LENGTH} characters")
+
+    if get is None:
+        from voxcomm.skills.star_citizen.database_query import query_snapshot
+
+        return query_snapshot(operation, query, location)
 
     endpoint = OPERATIONS[operation]
     params = {"type": "commodity"} if operation == "terminals" else {}

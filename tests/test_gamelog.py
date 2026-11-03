@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from voxcomm.gamelog import GameLogTracker
 from voxcomm.gamelog.facts import (
-    NAV_TARGET_SET, PILOT_LEFT, PILOT_TAKEN, QUANTUM_ARRIVED, SHIP_ENTERED, SHIP_LEFT, GameFacts,
+    NAV_TARGET_SET, PILOT_LEFT, PILOT_TAKEN, QUANTUM_ARRIVED, QUANTUM_SIGNATURE_UNKNOWN, SHIP_ENTERED, SHIP_LEFT, GameFacts,
 )
 from voxcomm.gamelog.paths import log_path_from_executable
 from voxcomm.gamelog.process import find_game_executable
@@ -76,12 +76,29 @@ class ProcessTests(unittest.TestCase):
 
 
 class FactsTests(unittest.TestCase):
+    def test_unknown_signatures_keep_each_ship_type(self):
+        facts = GameFacts()
+        origin_arrival = QUANTUM_ARRIVED_LINE.replace("CRUS_Spirit_C1_910348951738", "ORIG_85X_913108100345").replace("[910348951738]", "[913108100345]")
+        events = facts.apply([QUANTUM_ARRIVED_LINE, origin_arrival])
+        self.assertEqual(events, [QUANTUM_SIGNATURE_UNKNOWN, QUANTUM_SIGNATURE_UNKNOWN])
+        self.assertEqual([event.ship for event in events], ["Crusader Spirit C1", "Origin 85X"])
+
+    def test_unknown_quantum_signature_preserves_own_navigation(self):
+        facts = GameFacts()
+        self.assertEqual(facts.apply([QUANTUM_ARRIVED_LINE]), [QUANTUM_SIGNATURE_UNKNOWN])
+        facts.apply([JOIN_LINE, EXIT_LINE, QUANTUM_ROUTE_LINE])
+        foreign_arrival = QUANTUM_ARRIVED_LINE.replace("910348951738", "910348951739")
+        self.assertEqual(facts.apply([foreign_arrival]), [QUANTUM_SIGNATURE_UNKNOWN])
+        self.assertEqual(facts.nav_target, "glaciemring_TransitPoint_Bravo")
+        self.assertEqual(facts.apply([QUANTUM_ARRIVED_LINE]), [QUANTUM_ARRIVED])
+        self.assertEqual(facts.apply(["Quantum Drive has arrived at final destination"]), [])
+
     def test_join_route_and_exit_update_state(self):
         facts = GameFacts()
         facts.apply([LOCATION_LINE, JOIN_LINE])
         self.assertEqual((facts.location, facts.ship, facts.in_ship, facts.pilot_seat), ("Nyx_Levski", "Crusader C1 Spirit", True, None))
 
-        facts.apply([ROUTE_LINE])
+        facts.apply([EXIT_LINE, ROUTE_LINE])
         self.assertIs(facts.pilot_seat, True)
 
         facts.apply([EXIT_LINE])
@@ -89,31 +106,67 @@ class FactsTests(unittest.TestCase):
 
     def test_leave_only_changes_in_ship(self):
         facts = GameFacts()
-        facts.apply([ROUTE_LINE, LEAVE_LINE])
+        facts.apply([JOIN_LINE, EXIT_LINE, ROUTE_LINE, LEAVE_LINE])
         self.assertEqual((facts.ship, facts.in_ship, facts.pilot_seat), ("Crusader C1 Spirit", False, False))
 
     def test_exit_without_join_uses_vehicle_name(self):
         facts = GameFacts()
         facts.apply([EXIT_LINE])
         self.assertEqual((facts.ship, facts.in_ship, facts.pilot_seat), ("CRUS_Spirit_C1", None, False))
+        self.assertEqual(facts.ship_instance, "910348951738")
+
+    def test_only_local_exit_establishes_ship_instance(self):
+        facts = GameFacts()
+        facts.apply([EXIT_LINE.replace("Local client node", "Remote client node")])
+        self.assertEqual((facts.ship_instance, facts.pilot_seat), ("", None))
+        facts.apply([EXIT_LINE])
+        self.assertEqual(facts.ship_instance, "910348951738")
+
+    def test_same_model_with_different_channel_owner_clears_previous_instance(self):
+        facts = GameFacts()
+        facts.apply([JOIN_LINE, EXIT_LINE, ROUTE_LINE, QUANTUM_ROUTE_LINE])
+        self.assertTrue(facts.pilot_seat)
+        facts.apply([JOIN_LINE.replace("Vic_Evohl_Morrison", "Another_Player")])
+        self.assertEqual((facts.ship_instance, facts.pilot_seat, facts.nav_target), ("", None, ""))
+        self.assertEqual(facts.apply([QUANTUM_ARRIVED_LINE]), [QUANTUM_SIGNATURE_UNKNOWN])
+
+    def test_navigation_requires_local_ship_instance(self):
+        facts = GameFacts()
+        self.assertEqual(facts.apply([JOIN_LINE, QUANTUM_ROUTE_LINE, QUANTUM_ARRIVED_LINE]), [SHIP_ENTERED, QUANTUM_SIGNATURE_UNKNOWN])
+        self.assertEqual((facts.nav_target, facts.pilot_seat), ("", None))
+        facts.apply([EXIT_LINE])
+        self.assertEqual(facts.apply([QUANTUM_ROUTE_LINE]), [NAV_TARGET_SET])
+        other_route = QUANTUM_ROUTE_LINE.replace("910348951738", "910348951739")
+        other_arrival = QUANTUM_ARRIVED_LINE.replace("910348951738", "910348951739")
+        other_no_route = ROUTE_LINE.replace("910348951738", "910348951739")
+        self.assertEqual(facts.apply([other_route, other_arrival, other_no_route]), [QUANTUM_SIGNATURE_UNKNOWN])
+        self.assertEqual(facts.nav_target, "glaciemring_TransitPoint_Bravo")
+        self.assertIs(facts.pilot_seat, False)
+        self.assertEqual(facts.apply([QUANTUM_ARRIVED_LINE]), [QUANTUM_ARRIVED])
+        facts.apply([LEAVE_LINE, JOIN_LINE])
+        self.assertEqual(facts.ship_instance, "")
+        self.assertEqual(facts.apply([QUANTUM_ROUTE_LINE, QUANTUM_ARRIVED_LINE]), [QUANTUM_SIGNATURE_UNKNOWN])
 
     def test_apply_reports_state_transitions_once(self):
         facts = GameFacts()
         self.assertEqual(facts.apply([JOIN_LINE]), [SHIP_ENTERED])
         self.assertEqual(facts.apply([JOIN_LINE]), [])
         self.assertEqual(facts.apply([LEAVE_LINE]), [SHIP_LEFT])
+        facts.apply([JOIN_LINE, EXIT_LINE])
         self.assertEqual(facts.apply([ROUTE_LINE]), [PILOT_TAKEN])
         self.assertEqual(facts.apply([ROUTE_LINE]), [])
         self.assertEqual(facts.apply([EXIT_LINE]), [PILOT_LEFT])
 
     def test_new_nav_target_and_arrival_are_reported(self):
         facts = GameFacts()
+        facts.apply([JOIN_LINE, EXIT_LINE])
         self.assertEqual(facts.apply([QUANTUM_ROUTE_LINE]), [NAV_TARGET_SET])
         self.assertEqual(facts.apply([QUANTUM_ROUTE_LINE]), [])
         self.assertEqual(facts.apply([QUANTUM_ARRIVED_LINE]), [QUANTUM_ARRIVED])
 
     def test_quantum_target_comes_from_explicit_selection_only(self):
         facts = GameFacts()
+        facts.apply([JOIN_LINE, EXIT_LINE])
         facts.apply([QUANTUM_ROUTE_LINE])
         self.assertEqual(facts.quantum_target, "")
 
@@ -143,6 +196,7 @@ class FactsTests(unittest.TestCase):
 
     def test_route_calculation_sets_planned_nav_target_and_fuel(self):
         facts = GameFacts()
+        facts.apply([JOIN_LINE, EXIT_LINE])
         facts.apply([QUANTUM_ROUTE_LINE])
         self.assertEqual((facts.nav_target, facts.quantum_fuel), ("glaciemring_TransitPoint_Bravo", "410808.375000"))
         self.assertIn("Geplantes Navziel: glaciemring_TransitPoint_Bravo", facts.describe())
@@ -150,7 +204,7 @@ class FactsTests(unittest.TestCase):
 
     def test_arrival_makes_nav_target_suspected_until_location_is_confirmed(self):
         facts = GameFacts()
-        facts.apply([LOCATION_LINE, QUANTUM_ROUTE_LINE, QUANTUM_ARRIVED_LINE])
+        facts.apply([LOCATION_LINE, JOIN_LINE, EXIT_LINE, QUANTUM_ROUTE_LINE, QUANTUM_ARRIVED_LINE])
         self.assertEqual((facts.nav_target, facts.quantum_fuel), ("", ""))
         self.assertEqual(facts.location, "Nyx_Levski")
         self.assertIn("Letzter bekannter Aufenthalt (Inventory-Location): Nyx_Levski", facts.describe())
@@ -248,6 +302,31 @@ class ReaderTests(unittest.TestCase):
 
 
 class TrackerTests(unittest.TestCase):
+    def test_log_replacement_and_truncation_forget_old_ship_instance(self):
+        with tempfile.TemporaryDirectory() as root:
+            log = Path(root) / "Game.log"
+            log.write_text(JOIN_LINE + "\n" + EXIT_LINE + "\n", encoding="utf-8")
+            executable = f"Z:{Path(root).as_posix()}/Bin64/StarCitizen.exe"
+            tracker = GameLogTracker(executable_finder=lambda: executable)
+            tracker.poll()
+            self.assertEqual(tracker.facts.ship_instance, "910348951738")
+            tracker.set_ship_connection(True)
+            replacement = Path(root) / "replacement"
+            replacement.write_text(JOIN_LINE + "\n" + QUANTUM_ARRIVED_LINE + "\n", encoding="utf-8")
+            replacement.replace(log)
+            tracker.poll()
+            self.assertEqual(tracker.facts.ship_instance, "")
+            self.assertEqual(tracker.connected_ship, (False, ""))
+            self.assertEqual(tracker.take_events(), [])
+            with log.open("a", encoding="utf-8") as handle:
+                handle.write(EXIT_LINE + "\n")
+            tracker.poll()
+            self.assertEqual(tracker.facts.ship_instance, "910348951738")
+            log.write_text(JOIN_LINE + "\n", encoding="utf-8")
+            tracker.poll()
+            self.assertEqual(tracker.facts.ship_instance, "")
+            self.assertEqual(tracker.take_events(), [])
+
     def test_no_context_when_game_is_not_running(self):
         tracker = GameLogTracker(executable_finder=lambda: None)
         self.assertEqual(tracker.prompt_context(), "")

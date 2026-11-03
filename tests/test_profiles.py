@@ -182,7 +182,7 @@ def test_synthesis_and_game_announcement_use_their_profile_language():
             with patch("voxcomm.app.openai_tts.speak_stream", return_value=iter([])) as speak:
                 list(overlay._speech_chunks(["Hello"], "work-voice", ""))
                 speak.assert_called_once_with("Hello", config.tts_url, "work-voice", "")
-            overlay._game_log = Mock(facts=GameFacts())
+            overlay._game_log = Mock(facts=GameFacts(), path=None)
             overlay._game_log.take_events.return_value = [NAV_TARGET_SET]
             with patch.object(overlay, "_start_speak") as announce:
                 overlay._poll_game_log()
