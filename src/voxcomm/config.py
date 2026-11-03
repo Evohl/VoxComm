@@ -9,6 +9,9 @@ from pathlib import Path
 
 
 DEFAULT_GLOBAL_PROMPT = "Erfinde keine Fakten, Ausgaben, Quellen oder Systemzustände."
+DEFAULT_SHIP_CONNECT_KEYWORDS = "verbinde, verbinden, verbindung, connect, connecte, connection, connetion"
+DEFAULT_SHIP_DISCONNECT_KEYWORDS = "trenne, trennen, disconnect, disconnecte"
+DEFAULT_SHIP_TARGET_KEYWORDS = "ship, schiff, raumschiff, schiffscomputer, computer"
 
 
 @dataclass
@@ -48,6 +51,9 @@ class AppConfig:
     ptt_key: str = "F9"
     sample_rate: int = 16000
     tray_mode: bool = False
+    ship_connect_keywords: str = DEFAULT_SHIP_CONNECT_KEYWORDS
+    ship_disconnect_keywords: str = DEFAULT_SHIP_DISCONNECT_KEYWORDS
+    ship_target_keywords: str = DEFAULT_SHIP_TARGET_KEYWORDS
     game_announce_ship_entered: bool = True
     game_announce_ship_left: bool = True
     game_announce_pilot_taken: bool = True

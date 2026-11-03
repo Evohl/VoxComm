@@ -422,6 +422,12 @@ class SettingsDialog(QDialog):
         self.game_status_view = QLabel("\n".join(_game_status_lines(GameFacts())))
         self.game_status_view.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.game_status_view.setWordWrap(True)
+        self.ship_connect_keywords = QLineEdit(config.ship_connect_keywords)
+        self.ship_disconnect_keywords = QLineEdit(config.ship_disconnect_keywords)
+        self.ship_target_keywords = QLineEdit(config.ship_target_keywords)
+        for field in (self.ship_connect_keywords, self.ship_disconnect_keywords, self.ship_target_keywords):
+            field.setToolTip(tr("Comma-separated keywords. Applies to all profiles."))
+            field.setCursorPosition(0)
         self._announce_checks = {}
         self._game_reply_fields = {}
         self._game_reply_drafts = {}
@@ -453,7 +459,10 @@ class SettingsDialog(QDialog):
         self.audio_confirmation_heading.setToolTip(announcement_scope)
         self.game_log_section = self._section(
             None,
-            [(None, self.audio_confirmation_heading)]
+            [(tr("Connect keywords (all profiles)"), self.ship_connect_keywords),
+             (tr("Disconnect keywords (all profiles)"), self.ship_disconnect_keywords),
+             (tr("Ship keywords (all profiles)"), self.ship_target_keywords),
+             (None, self.audio_confirmation_heading)]
             + announcement_rows + [(tr("Game status"), self.game_status_view),
                                    (None, self.observed_ships_button),
                                    (None, self.game_log_unfiltered),
@@ -1557,6 +1566,9 @@ class SettingsDialog(QDialog):
         config.llm_provider, config.llm_url = self.provider.currentData() or "ollama", self.llm_url.text()
         config.controller_mode = self.controller_mode.currentData() or "hybrid"
         config.controller_llm_keyword = self.controller_llm_keyword.text().strip()
+        config.ship_connect_keywords = self.ship_connect_keywords.text().strip()
+        config.ship_disconnect_keywords = self.ship_disconnect_keywords.text().strip()
+        config.ship_target_keywords = self.ship_target_keywords.text().strip()
         config.ollama_api_key = self.api_key.text().strip()
         config.ptt_key, config.sample_rate = self._default_hotkey, self.sample_rate.value()
         config.overlay_hide_seconds = self.overlay_hide_seconds.value()
@@ -2023,7 +2035,9 @@ class Overlay(QMainWindow):
                 game_context = self._game_log.prompt_context()
                 game_facts = self._game_log.facts
                 game_state = {"in_ship": game_facts.in_ship, "pilot_seat": game_facts.pilot_seat}
-                connection = ship_connection_command(text)
+                connection = ship_connection_command(text, self.config.ship_connect_keywords,
+                                                     self.config.ship_disconnect_keywords,
+                                                     self.config.ship_target_keywords)
             # Mit Websuche kann die Antwort nachträglich ersetzt werden, daher erst nach der fertigen Antwort sprechen.
             speech = None
             if resolved_profile.auto_speak and "web_search" not in enabled_tools:

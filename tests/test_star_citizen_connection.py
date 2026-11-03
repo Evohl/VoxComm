@@ -20,6 +20,60 @@ def test_disconnect_command(text):
     assert ship_connection_command(text) is False
 
 
+@pytest.mark.parametrize("text", ["Verbindung zum Schiffscomputer herstellen", "computer connect", "connetion raumschiff"])
+def test_keyword_groups_connect_in_any_order(text):
+    assert ship_connection_command(text) is True
+
+
+@pytest.mark.parametrize("connect", ["verbinde", "verbindung", "connect", "connection", "connetion"])
+@pytest.mark.parametrize("target", ["ship", "schiff", "raumschiff", "schiffscomputer", "computer"])
+def test_requested_default_keywords(connect, target):
+    assert ship_connection_command(f"{connect} {target}") is True
+
+
+def test_custom_keywords_and_ambiguous_commands():
+    assert ship_connection_command("koppeln bordnetz", "koppeln", "entkoppeln", "bordnetz") is True
+    assert ship_connection_command("entkoppeln bordnetz", "koppeln", "entkoppeln", "bordnetz") is False
+    assert ship_connection_command("verbinde und trenne schiff") is None
+    assert ship_connection_command("verbinde trenne schiff") is None
+    assert ship_connection_command("disconnect spaceship") is None
+    assert ship_connection_command("Verbindung zum Schiff trennen") is False
+    assert ship_connection_command("disconnect ship connection") is False
+    assert ship_connection_command("verbinde verbindung trenne schiff") is None
+    assert ship_connection_command("connect ship", "", "disconnect", "ship") is None
+    assert ship_connection_command("verbindung schiff", "verbindung", "verbindung", "schiff") is None
+
+
+def test_keyword_settings_apply_and_round_trip(tmp_path):
+    from voxcomm.app import SettingsDialog
+    from voxcomm.config import load_config, save_config
+
+    app = QApplication.instance() or QApplication([])
+    config = AppConfig(enabled_tools={"__global__": ["star_citizen_log"]})
+    dialog = SettingsDialog(config)
+    try:
+        dialog.ship_connect_keywords.setText("koppeln, verbinden")
+        dialog.ship_disconnect_keywords.setText("entkoppeln")
+        dialog.ship_target_keywords.setText("bordnetz, schiff")
+        dialog.apply(config)
+        path = tmp_path / "config.toml"
+        save_config(config, path)
+        loaded = load_config(path)
+        assert ship_connection_command("koppeln bordnetz", loaded.ship_connect_keywords,
+                                       loaded.ship_disconnect_keywords, loaded.ship_target_keywords) is True
+        assert ship_connection_command("entkoppeln bordnetz", loaded.ship_connect_keywords,
+                                       loaded.ship_disconnect_keywords, loaded.ship_target_keywords) is False
+        reopened = SettingsDialog(loaded)
+        try:
+            assert reopened.ship_connect_keywords.text() == "koppeln, verbinden"
+            assert reopened.ship_disconnect_keywords.text() == "entkoppeln"
+            assert reopened.ship_target_keywords.text() == "bordnetz, schiff"
+        finally:
+            reopened.close()
+    finally:
+        dialog.close()
+
+
 @pytest.mark.parametrize("text", ["do not connect ship", "verbinde nicht mit dem Schiff", "can you connect ship?",
                                   "connect ship and activate weapons", "disconnect keyboard", "ship status"])
 def test_unrelated_or_ambiguous_commands_do_not_change_connection(text):
@@ -100,7 +154,9 @@ def test_voice_commands_use_requested_profile_and_preserve_pilot_safety(monkeypa
                        enabled_tools={"Star Citizen": ["star_citizen_log", "web_search"]},
                        profile_output_languages={"Star Citizen": "English"},
                        profile_voices={"Star Citizen": "ship-voice"},
-                       profile_auto_speak={"Star Citizen": True})
+                       profile_auto_speak={"Star Citizen": True},
+                       ship_connect_keywords="koppeln", ship_disconnect_keywords="entkoppeln",
+                       ship_target_keywords="bordnetz")
     with patch("voxcomm.app.load_config", return_value=config), patch("voxcomm.app.PttListener"):
         overlay = Overlay()
         overlay._game_log = tracker
@@ -109,7 +165,8 @@ def test_voice_commands_use_requested_profile_and_preserve_pilot_safety(monkeypa
         overlay.events.speak.connect(lambda *args: spoken.append(args))
         try:
             with (patch("voxcomm.app.record_until_released", return_value=b"\0" * 9600),
-                  patch("voxcomm.app.transcribe_sync", side_effect=["connect ship", "disconnect ship", "connect ship"]),
+                  patch("voxcomm.app.transcribe_sync", side_effect=["koppeln bordnetz", "entkoppeln bordnetz",
+                                                                    "koppeln bordnetz", "connect ship"]),
                   patch("voxcomm.app.chat", return_value="No game access") as chat):
                 overlay._capture(threading.Event(), "Star Citizen")
                 assert tracker.connected_ship == (True, "C1 Spirit")
@@ -125,6 +182,10 @@ def test_voice_commands_use_requested_profile_and_preserve_pilot_safety(monkeypa
                 overlay._capture(threading.Event(), "")
                 assert tracker.connected_ship == (False, "")
                 chat.assert_called_once()
+
+                overlay._capture(threading.Event(), "Star Citizen")
+                assert tracker.connected_ship == (False, "")
+                assert chat.call_count == 2
         finally:
             overlay.listener.stop()
             overlay.tray_icon.hide()
