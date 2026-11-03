@@ -9,7 +9,6 @@ from voxcomm.skills.star_citizen.gamelog.facts import (
     GameFacts,
     GameLogTracker,
     PILOT_LEFT,
-    PILOT_TAKEN,
     SHIP_ENTERED,
     SHIP_LEFT,
 )
@@ -23,7 +22,8 @@ PILOT = "Failed to get starmap route data! | CRUS_Spirit_C1_123456[123456]|CSCIt
 
 def test_leaving_ship_revokes_pilot_only_control():
     facts = GameFacts()
-    assert facts.apply([JOIN, EXIT, PILOT]) == [SHIP_ENTERED, PILOT_LEFT, PILOT_TAKEN]
+    assert facts.apply([JOIN, EXIT, PILOT]) == [SHIP_ENTERED, PILOT_LEFT]
+    facts.pilot_seat = True
     actions = tuple(parse_action_catalog(
         "[pilot seat yes]\n"
         "Boost On => boost on => Button2 => {EN} Boost on. | {DE} Schub an."
@@ -86,10 +86,10 @@ def test_concurrent_polls_serialize_reader_and_preserve_cursor(monkeypatch, tmp_
 
     assert cursor[0] == 2
     assert reader.read_new_lines.call_count == 2
-    assert (tracker.facts.in_ship, tracker.facts.pilot_seat) == (True, True)
+    assert (tracker.facts.in_ship, tracker.facts.pilot_seat) == (True, False)
     assert "Im Schiff: ja" in context
-    assert "Pilotensitz: ja" in context
-    assert tracker.take_events() == [PILOT_TAKEN]
+    assert "Pilotensitz: nein" in context
+    assert tracker.take_events() == []
 
 
 def test_snapshots_and_events_wait_for_complete_poll(monkeypatch, tmp_path):
@@ -147,7 +147,7 @@ def test_snapshots_and_events_wait_for_complete_poll(monkeypatch, tmp_path):
         events = events_future.result(timeout=5)
 
     assert (old_snapshot.in_ship, old_snapshot.pilot_seat) == (None, None)
-    assert (new_snapshot.in_ship, new_snapshot.pilot_seat) == (True, True)
-    assert events == [SHIP_ENTERED, PILOT_LEFT, PILOT_TAKEN]
-    new_snapshot.pilot_seat = False
-    assert tracker.facts.pilot_seat is True
+    assert (new_snapshot.in_ship, new_snapshot.pilot_seat) == (True, False)
+    assert events == [SHIP_ENTERED, PILOT_LEFT]
+    new_snapshot.pilot_seat = True
+    assert tracker.facts.pilot_seat is False

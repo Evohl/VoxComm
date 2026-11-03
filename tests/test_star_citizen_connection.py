@@ -91,7 +91,7 @@ def test_log_exit_disconnects_even_without_reliable_pilot_entry(monkeypatch, tmp
     assert tracker.facts.pilot_seat is False
     assert tracker.set_ship_connection(True) == "Crusader C1 Spirit"
     assert tracker.connected_ship == (True, "Crusader C1 Spirit")
-    assert tracker.facts.pilot_seat is False
+    assert tracker.facts.pilot_seat is True
 
     tracker.poll()
 
@@ -105,6 +105,59 @@ def test_connection_is_rejected_if_the_game_is_not_running():
     tracker.poll()
     assert tracker.set_ship_connection(True) is None
     assert tracker.connected_ship == (False, "")
+    assert tracker.facts.pilot_seat is None
+
+
+def test_voice_connection_recognizes_matching_arrival_without_ship_channel(monkeypatch, tmp_path):
+    from voxcomm.skills.star_citizen.gamelog.facts import QUANTUM_ARRIVED
+
+    exit_line = "ClearDriver: Local client node [99] releasing control token for 'CRUS_Spirit_C1_912124980711' [912124980711]"
+    arrival = (
+        "<2026-11-03T12:09:20.286Z> [Notice] <Quantum Drive Arrived - Arrived at Final Destination> "
+        "[ItemNavigation][CL][2416] | NOT AUTH | CRUS_Spirit_C1_912124980711[912124980711]|"
+        "CSCItemNavigation::OnQuantumDriveArrived|Quantum Drive has arrived at final destination [Team_CGP4][QuantumTravel]"
+    )
+    reader = Mock(read_new_lines=Mock(side_effect=[[exit_line], [arrival]]))
+    monkeypatch.setattr(facts_module, "LogReader", lambda path: reader)
+    monkeypatch.setattr(facts_module, "log_path_from_executable", lambda executable: tmp_path / "Game.log")
+    tracker = GameLogTracker(executable_finder=lambda: "game.exe")
+    tracker.poll()
+    assert tracker.facts.in_ship is None
+    assert tracker.facts.ship_instance == "912124980711"
+    tracker.set_ship_connection(True)
+
+    tracker.poll()
+
+    assert tracker.take_events() == [QUANTUM_ARRIVED]
+    assert tracker.facts.in_ship is None
+
+
+def test_connection_enables_pilot_seat_precondition_without_asserting_ship_presence(monkeypatch, tmp_path):
+    from voxcomm.action_catalog import parse_action_catalog
+    from voxcomm.skills.controller.tool import _precondition_message
+
+    reader = Mock(read_new_lines=Mock(return_value=[]))
+    monkeypatch.setattr(facts_module, "LogReader", lambda path: reader)
+    monkeypatch.setattr(facts_module, "log_path_from_executable", lambda executable: tmp_path / "Game.log")
+    tracker = GameLogTracker(executable_finder=lambda: "game.exe")
+    actions = tuple(parse_action_catalog(
+        "[pilot seat yes]\n"
+        "Boost On => boost on => Button2 => {EN} Boost on. | {DE} Schub an."
+    ))
+    tracker.poll()
+    assert _precondition_message(actions, {"pilot_seat": tracker.facts.pilot_seat})
+
+    assert tracker.set_ship_connection(True) == ""
+    assert tracker.facts.in_ship is None
+    assert not _precondition_message(actions, {"pilot_seat": tracker.facts.pilot_seat})
+    assert "Pilotensitz: ja" in tracker.prompt_context()
+    assert tracker.take_events() == []
+
+    tracker.set_ship_connection(False)
+    assert tracker.facts.in_ship is None
+    assert tracker.facts.pilot_seat is False
+    assert _precondition_message(actions, {"pilot_seat": tracker.facts.pilot_seat})
+    assert tracker.take_events() == []
 
 
 def test_voice_connection_then_log_exit_is_announced_after_speech(monkeypatch, tmp_path):
@@ -142,7 +195,7 @@ def test_voice_connection_then_log_exit_is_announced_after_speech(monkeypatch, t
             overlay.deleteLater()
 
 
-def test_voice_commands_use_requested_profile_and_preserve_pilot_safety(monkeypatch, tmp_path):
+def test_voice_commands_use_requested_profile_and_set_pilot_seat(monkeypatch, tmp_path):
     from voxcomm.app import Overlay
 
     app = QApplication.instance() or QApplication([])
@@ -170,12 +223,13 @@ def test_voice_commands_use_requested_profile_and_preserve_pilot_safety(monkeypa
                   patch("voxcomm.app.chat", return_value="No game access") as chat):
                 overlay._capture(threading.Event(), "Star Citizen")
                 assert tracker.connected_ship == (True, "C1 Spirit")
-                assert tracker.facts.pilot_seat is None
+                assert tracker.facts.pilot_seat is True
                 assert spoken[-1][0] == "Connected to C1 Spirit's ship computer."
                 assert spoken[-1][2:] == ("ship-voice", "English")
 
                 overlay._capture(threading.Event(), "Star Citizen")
                 assert tracker.connected_ship == (False, "")
+                assert tracker.facts.pilot_seat is False
                 assert spoken[-1][0] == "Disconnected from C1 Spirit."
                 chat.assert_not_called()
 

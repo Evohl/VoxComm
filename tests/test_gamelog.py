@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from voxcomm.gamelog import GameLogTracker
 from voxcomm.gamelog.facts import (
-    NAV_TARGET_SET, PILOT_LEFT, PILOT_TAKEN, QUANTUM_ARRIVED, QUANTUM_SIGNATURE_UNKNOWN, SHIP_ENTERED, SHIP_LEFT, GameFacts,
+    NAV_TARGET_SET, PILOT_LEFT, QUANTUM_ARRIVED, QUANTUM_SIGNATURE_UNKNOWN, SHIP_ENTERED, SHIP_LEFT, GameFacts,
 )
 from voxcomm.gamelog.paths import log_path_from_executable
 from voxcomm.gamelog.process import find_game_executable
@@ -99,6 +99,9 @@ class FactsTests(unittest.TestCase):
         self.assertEqual((facts.location, facts.ship, facts.in_ship, facts.pilot_seat), ("Nyx_Levski", "Crusader C1 Spirit", True, None))
 
         facts.apply([EXIT_LINE, ROUTE_LINE])
+        self.assertIs(facts.pilot_seat, False)
+        facts.pilot_seat = True
+        self.assertEqual(facts.apply([ROUTE_LINE]), [])
         self.assertIs(facts.pilot_seat, True)
 
         facts.apply([EXIT_LINE])
@@ -114,6 +117,7 @@ class FactsTests(unittest.TestCase):
         facts.apply([EXIT_LINE])
         self.assertEqual((facts.ship, facts.in_ship, facts.pilot_seat), ("CRUS_Spirit_C1", None, False))
         self.assertEqual(facts.ship_instance, "910348951738")
+        self.assertIn("Schiffs-ID (letzte lokale Steuerung): 910348951738", facts.describe())
 
     def test_only_local_exit_establishes_ship_instance(self):
         facts = GameFacts()
@@ -125,7 +129,7 @@ class FactsTests(unittest.TestCase):
     def test_same_model_with_different_channel_owner_clears_previous_instance(self):
         facts = GameFacts()
         facts.apply([JOIN_LINE, EXIT_LINE, ROUTE_LINE, QUANTUM_ROUTE_LINE])
-        self.assertTrue(facts.pilot_seat)
+        self.assertFalse(facts.pilot_seat)
         facts.apply([JOIN_LINE.replace("Vic_Evohl_Morrison", "Another_Player")])
         self.assertEqual((facts.ship_instance, facts.pilot_seat, facts.nav_target), ("", None, ""))
         self.assertEqual(facts.apply([QUANTUM_ARRIVED_LINE]), [QUANTUM_SIGNATURE_UNKNOWN])
@@ -147,15 +151,27 @@ class FactsTests(unittest.TestCase):
         self.assertEqual(facts.ship_instance, "")
         self.assertEqual(facts.apply([QUANTUM_ROUTE_LINE, QUANTUM_ARRIVED_LINE]), [QUANTUM_SIGNATURE_UNKNOWN])
 
+    def test_voice_confirmed_pilot_seat_accepts_only_matching_local_instance(self):
+        facts = GameFacts()
+        facts.apply([EXIT_LINE])
+        facts.pilot_seat = True
+        self.assertIsNone(facts.in_ship)
+        self.assertEqual(facts.apply([QUANTUM_ROUTE_LINE]), [NAV_TARGET_SET])
+        other_arrival = QUANTUM_ARRIVED_LINE.replace("910348951738", "910348951739")
+        self.assertEqual(facts.apply([other_arrival]), [QUANTUM_SIGNATURE_UNKNOWN])
+        self.assertEqual(facts.apply([QUANTUM_ARRIVED_LINE]), [QUANTUM_ARRIVED])
+        facts.in_ship = False
+        self.assertEqual(facts.apply([QUANTUM_ARRIVED_LINE]), [QUANTUM_SIGNATURE_UNKNOWN])
+
     def test_apply_reports_state_transitions_once(self):
         facts = GameFacts()
         self.assertEqual(facts.apply([JOIN_LINE]), [SHIP_ENTERED])
         self.assertEqual(facts.apply([JOIN_LINE]), [])
         self.assertEqual(facts.apply([LEAVE_LINE]), [SHIP_LEFT])
         facts.apply([JOIN_LINE, EXIT_LINE])
-        self.assertEqual(facts.apply([ROUTE_LINE]), [PILOT_TAKEN])
         self.assertEqual(facts.apply([ROUTE_LINE]), [])
-        self.assertEqual(facts.apply([EXIT_LINE]), [PILOT_LEFT])
+        self.assertEqual(facts.apply([ROUTE_LINE]), [])
+        self.assertEqual(facts.apply([EXIT_LINE]), [])
 
     def test_new_nav_target_and_arrival_are_reported(self):
         facts = GameFacts()
@@ -180,6 +196,7 @@ class FactsTests(unittest.TestCase):
         self.assertIn("Game-Build: unbekannt", text)
         self.assertIn("Ungefähre Region (Streaming-SOC): unbekannt", text)
         self.assertIn("Letzter bekannter Aufenthalt (Inventory-Location): unbekannt", text)
+        self.assertIn("Schiffs-ID (letzte lokale Steuerung): unbekannt", text)
         self.assertIn("Im Schiff: unbekannt", text)
         self.assertIn("Pilotensitz: unbekannt", text)
         self.assertIn("Quantenziel: unbekannt", text)

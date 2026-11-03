@@ -94,7 +94,8 @@ class GameFacts:
     def _apply_line(self, line: str) -> str | None:
         if any(pattern.search(line) for pattern in (NO_ROUTE_RE, QUANTUM_TARGET_RE, ROUTE_CALC_RE, QUANTUM_ARRIVED_RE)):
             match = NAVIGATION_INSTANCE_RE.search(line)
-            if self.in_ship is not True or not self.ship_instance or not match or match["instance"] != self.ship_instance:
+            in_control = self.in_ship is True or (self.in_ship is None and self.pilot_seat is True)
+            if not in_control or not self.ship_instance or not match or match["instance"] != self.ship_instance:
                 if match and QUANTUM_ARRIVED_RE.search(line):
                     return GameEvent(QUANTUM_SIGNATURE_UNKNOWN, _vehicle_name(match["vehicle"]))
                 return None
@@ -134,8 +135,6 @@ class GameFacts:
             self.ship = self.ship or VEHICLE_ID_SUFFIX_RE.sub("", match["vehicle"])
             self.ship_instance = match["instance"]
             self.pilot_seat = False
-        elif NO_ROUTE_RE.search(line):
-            self.pilot_seat = True
         elif match := QUANTUM_TARGET_RE.search(line):
             self.quantum_target = match["target"]
         elif match := ROUTE_CALC_RE.search(line):
@@ -148,12 +147,13 @@ class GameFacts:
         in_ship = {True: "ja", False: "nein"}.get(self.in_ship, UNKNOWN)
         pilot_seat = {True: "ja", False: "nein"}.get(self.pilot_seat, UNKNOWN)
         return "\n".join([
-            "Star Citizen läuft. Live-Status aus dem Game.log (nur diese Fakten verwenden, nichts erfinden):",
+            "Star Citizen läuft. Status aus dem Game.log; Pilotensitz wird per Sprachbefehl bestätigt und beim erkannten Ausstieg zurückgesetzt (nur diese Angaben verwenden, nichts erfinden):",
             f"Spielversion: {self.game_version or UNKNOWN}",
             f"Game-Build: {self.game_build or UNKNOWN}",
             f"Ungefähre Region (Streaming-SOC): {self.streaming_region or UNKNOWN}",
             f"Letzter bekannter Aufenthalt (Inventory-Location): {self.location or UNKNOWN}",
             f"Schiff: {self.ship or UNKNOWN}",
+            f"Schiffs-ID (letzte lokale Steuerung): {self.ship_instance or UNKNOWN}",
             f"Im Schiff: {in_ship}",
             f"Pilotensitz: {pilot_seat}",
             f"Quantenziel: {self.quantum_target or UNKNOWN}",
@@ -194,6 +194,8 @@ class GameLogTracker:
             if connected and self._path is None:
                 return None
             ship = self._facts.ship if connected else self._connected_ship or self._facts.ship
+            if connected or self._connected:
+                self._facts.pilot_seat = connected
             self._connected = connected
             self._connected_ship = ship if connected else ""
             return ship

@@ -22,6 +22,7 @@
 
 ## Verification
 
+- Use temporary XDG directories as required by the root verification rule.
 - `.venv/bin/python -m pytest -q tests/test_controller_skill.py tests/test_action_catalog.py tests/test_llm.py`
 
 ## Child DOX Index

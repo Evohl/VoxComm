@@ -129,10 +129,31 @@ class GameLogReplyTests(unittest.TestCase):
         from voxcomm.app import _game_status_lines
         from voxcomm.gamelog.facts import GameFacts
 
-        lines = _game_status_lines(GameFacts(game_version="4.10.2", game_build="12881860"))
+        lines = _game_status_lines(GameFacts(game_version="4.10.2", game_build="12881860", ship_instance="912124980711"))
 
         self.assertTrue(any(line.endswith(": 4.10.2") for line in lines))
         self.assertTrue(any(line.endswith(": 12881860") for line in lines))
+        self.assertTrue(any(line.endswith(": 912124980711") for line in lines))
+
+    def test_settings_status_uses_live_tracker_without_draining_its_events(self):
+        from voxcomm.gamelog.facts import GameFacts
+        from voxcomm.i18n import tr
+
+        live_tracker = Mock(path=Path("Game.log"), facts=GameFacts(pilot_seat=True, ship_instance="123456"))
+        dialog = Mock(_game_status_tracker=live_tracker, _game_log_events=deque(), _game_log_text="")
+        dialog.star_citizen.isChecked.return_value = True
+        dialog.game_log_unfiltered.isChecked.return_value = False
+        dialog._game_log.facts = GameFacts(pilot_seat=False)
+        dialog._game_log.take_events.return_value = []
+
+        SettingsDialog._refresh_game_log(dialog)
+
+        text = dialog.game_status_view.setText.call_args.args[0]
+        self.assertIn(f"{tr('Pilot seat')}: {tr('Yes')}", text)
+        self.assertIn("123456", text)
+        dialog._game_log.take_events.assert_called_once()
+        live_tracker.take_events.assert_not_called()
+        live_tracker.poll.assert_not_called()
 
     def test_default_reply_is_used_without_override(self):
         self.assertEqual(game_event_reply({}, NAV_TARGET_SET, "__global__", "DE"), "Captain, Navziel ausgewählt.")
@@ -1826,7 +1847,8 @@ class ApplicationLifecycleTests(unittest.TestCase):
                 overlay._settings()
                 overlay._settings()
 
-            dialog_class.assert_called_once_with(overlay.config, reset_position_callback=overlay.reset_overlay_position)
+            dialog_class.assert_called_once_with(overlay.config, reset_position_callback=overlay.reset_overlay_position,
+                                                 game_status_tracker=overlay._game_log)
             self.assertEqual(dialog_class.return_value.show.call_count, 2)
             self.assertEqual(dialog_class.return_value.raise_.call_count, 2)
             overlay.listener.stop()

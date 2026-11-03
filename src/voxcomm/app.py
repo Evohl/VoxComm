@@ -250,6 +250,7 @@ def _game_status_lines(facts: GameFacts) -> list[str]:
         f"{tr('Approximate region (Streaming SOC)')}: {facts.streaming_region or unknown}",
         f"{tr('Last known stay (inventory location)')}: {facts.location or unknown}",
         f"{tr('Ship')}: {facts.ship or unknown}",
+        f"{tr('Ship ID (last local control)')}: {facts.ship_instance or unknown}",
         f"{tr('In ship')}: {flag(facts.in_ship)}",
         f"{tr('Pilot seat')}: {flag(facts.pilot_seat)}",
     ]
@@ -258,7 +259,7 @@ def _game_status_lines(facts: GameFacts) -> list[str]:
 class SettingsDialog(QDialog):
     save_requested = Signal()
 
-    def __init__(self, config: AppConfig, parent=None, reset_position_callback=None):
+    def __init__(self, config: AppConfig, parent=None, reset_position_callback=None, game_status_tracker=None):
         super().__init__(parent)
         set_language(config.ui_language)
         self.ui_language = QComboBox()
@@ -405,6 +406,7 @@ class SettingsDialog(QDialog):
         self.input_control.toggled.connect(self.action_catalog_section.setVisible)
         self._update_controller_fields()
         self._game_log = GameLogTracker()
+        self._game_status_tracker = game_status_tracker
         self._game_log_events: deque[str] = deque(maxlen=GAME_LOG_HISTORY)
         self._game_log_text = ""
         self._raw_log_reader = None
@@ -1343,7 +1345,9 @@ class SettingsDialog(QDialog):
         for event in self._game_log.take_events():
             name = getattr(event, "ship", "")
             self._game_log_events.append(f"{stamp}  {tr(GAME_EVENT_TEXT[event])}" + (f": {name}" if name else ""))
-        self.game_status_view.setText("\n".join(_game_status_lines(self._game_log.facts)))
+        status_tracker = self._game_status_tracker
+        facts = status_tracker.facts if status_tracker is not None and status_tracker.path is not None else self._game_log.facts
+        self.game_status_view.setText("\n".join(_game_status_lines(facts)))
         if self.game_log_unfiltered.isChecked():
             path = self._game_log.path
             if self._raw_log_reader is None or self._raw_log_reader.path != path:
@@ -2371,7 +2375,8 @@ class Overlay(QMainWindow):
 
     def _settings(self):
         if self._settings_dialog is None:
-            self._settings_dialog = SettingsDialog(self.config, reset_position_callback=self.reset_overlay_position)
+            self._settings_dialog = SettingsDialog(self.config, reset_position_callback=self.reset_overlay_position,
+                                                   game_status_tracker=self._game_log)
             self._settings_dialog.save_requested.connect(
                 lambda: self._save_settings(self._settings_dialog))
             self._settings_dialog.finished.connect(self._settings_dialog_closed)

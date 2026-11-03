@@ -77,6 +77,7 @@ Default section order:
 ## Project Ownership
 
 - VoxComm is a general desktop voice assistant; game-specific behavior belongs to the corresponding game skill.
+- `README.md` separates the base application from optional web search, controller, and Star Citizen skills and explains each skill's behavior and permissions.
 - `src/voxcomm/gamelog` preserves legacy imports for the Star Citizen skill's game-log implementation.
 - `src/voxcomm/config.py` owns base configuration and persistence; `src/voxcomm/profiles.py` resolves profile-specific settings and permissions.
 - `src/voxcomm/app.py` owns the current Qt UI and application orchestration; provider modules own service integrations.
@@ -92,7 +93,7 @@ Default section order:
 - The `Default` profile exposes the existing `ptt_key`; named profile hotkeys remain separate. Keep the `__global__` profile identifier and existing configuration keys unchanged.
 - Each profile has an input language, one output language, and an automatic-read setting. Output language controls the model instruction, HTTP TTS language, and Piper voice filtering. Preserve legacy language settings and migrate using explicit response language, then TTS language, then voice or voice filter.
 - Server API keys are optional and used as bearer credentials for HTTP LLM, whisper.cpp, and OpenAI-compatible TTS requests and discovery; Wyoming TCP has no API-key support. Preserve existing `ollama_api_key` values.
-- General settings fit in the minimum dialog size; profile instructions, the controller catalog, and the Star Citizen event log expand with the window. Show game status outside the event log.
+- General settings fit in the minimum dialog size; profile instructions, the controller catalog, and the Star Citizen event log expand with the window. Show game status outside the event log using the live application tracker when available; the log view must not drain its events.
 - The Star Citizen log view defaults to recognized events and offers an opt-in unfiltered view limited to 10,000 lines; the raw view must not alter event tracking or bypass profile permissions.
 - While an existing profile permits Star Citizen Log, collect observed ship class identifiers and channel names locally for inspection in the log settings; do not retain player names. An existing profile with both Log and UEX permission may use its configured model to propose UEX mappings; label proposals as unverified, preserve manual corrections, and do not use them as confirmed game state.
 - Profile hotkeys independently select their profile for each request; the profile selected in settings does not activate or disable other hotkeys.
@@ -100,15 +101,16 @@ Default section order:
 - For a profile permitting Star Citizen Log or UEX, announce the actual local UEX or web search source as soon as the search starts; include the announcement in the displayed answer and speak it only once. Other profiles do not use Star Citizen source announcements. Do not append a routine generic UEX disclaimer; still report relevant stale data or version mismatches.
 - Star Citizen audio-confirmation checkboxes apply to all profiles; automatic announcements use the first alphabetically named profile permitting Star Citizen Log, falling back to Default, independent of the settings selection. Reply text, voice, and language come from that profile.
 - Unknown quantum signatures have a separately configurable announcement that includes the detected ship type when available; an unknown identity does not establish proximity or hostility.
-- The ship-computer connection uses globally editable connect, disconnect, and ship keyword groups in Star Citizen Log settings; exiting the pilot seat also disconnects via the game log. Voice connection must not assert pilot-seat or ship-presence controller preconditions.
+- The ship-computer connection uses globally editable connect, disconnect, and ship keyword groups in Star Citizen Log settings. Only voice connection sets the pilot-seat status to yes, and explicitly disconnecting an existing connection resets it to no; neither changes ship-presence status. Exiting the pilot seat also disconnects via the game log. Show the last locally identified ship instance ID in game status.
 - Announcement replies are edited per event and profile; controller replies are edited in the profile catalog. Both accept the selectable TTS language codes, and existing reply overrides must be retained or migrated without loss.
+- Star Citizen hangar and cargo service actions confirm "Hangar request transmitted." in English without describing the request as landing or docking; the same controls can be used for takeoff.
 - Profile permissions default to disabled. Preserve existing configuration identifiers and fail closed for unknown or disabled tools.
 - PTT device loss cancels an active recording without submitting it; configuration serialization must round-trip valid Unicode TOML strings.
 - The virtual-controller daemon holds an exclusive startup lock and only removes its own socket; timeouts do not establish that an existing socket is stale.
 
 ## Verification
 
-- Run `QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q` for the complete test suite.
+- Run `QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q` for the complete test suite, with temporary `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and `XDG_CACHE_HOME` directories so tests cannot overwrite user data.
 
 ## Child DOX Index
 

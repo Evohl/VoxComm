@@ -29,9 +29,9 @@
 - Legacy `voxcomm.gamelog` imports and submodule patch sites must resolve to the same objects as `voxcomm.skills.star_citizen.gamelog`.
 - Legacy `voxcomm.providers.uex` resolves to the same module as `voxcomm.skills.star_citizen.uex`.
 - Game-log polling and event draining are synchronized; `GameLogTracker.facts` returns a detached snapshot. Leaving a ship revokes a confirmed pilot seat.
-- Ship-computer connection is a logical voice-controlled state requiring Star Citizen Log permission and a running game; it never confirms pilot-seat or ship-presence preconditions. An explicit pilot-seat exit in the log clears this state and remains announceable even when seat entry was not detected.
+- Ship-computer connection is a logical voice-controlled state requiring Star Citizen Log permission and a running game. Only connecting by voice sets pilot-seat status to yes for controller preconditions; navigation log lines must not infer seat entry. Disconnecting an existing connection sets it to no. Neither changes ship-presence status, and model context identifies the voice confirmation. An explicit pilot-seat exit in the log clears this state and remains announceable even when seat entry was not detected.
 - Voice commands require a whole-word match from the global ship keyword list and one from the connect or disconnect list. The lists are comma-separated, editable in settings, and may be empty; reject negated, questioned, compound, or conflicting commands. A generic connection noun does not conflict with an explicit disconnect keyword.
-- Navigation is attributed only to the exact ship instance last identified by a local pilot-seat exit while its ship channel remains active; clear the association on channel exit, ship change, game stop, or log reset. This is not proof of current control.
+- Display the last locally identified ship instance ID in game status and model context, or unknown when unavailable. Attribute navigation only to this exact instance when its ship channel remains active, or when ship presence is unknown and the pilot seat was explicitly confirmed by voice. Never attribute it when the ship is known to have been left. Clear the association on channel exit, ship change, game stop, or log reset; the instance alone is not proof of current control.
 - Quantum arrivals without a matching known instance produce an independently switchable unknown-signature announcement with the log's ship type; they do not mutate own navigation. An unknown signature may be the player's own ship and does not prove distance, ownership, or hostility. Preserve each queued announcement's ship type and profile-specific reply overrides.
 - Pilot-seat entry never automatically announces a connection; explicit voice connection uses the profile's pilot-entry reply. Pilot-seat exit and voice disconnection use the pilot-exit reply. Preserve profile-specific reply overrides.
 - Raw log viewing uses an independent reader, handles truncation and replacement, and bounds its initial history and buffered bytes without affecting event detection.
@@ -41,6 +41,7 @@
 
 ## Verification
 
+- Use temporary XDG directories as required by the root verification rule.
 - `QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q tests/test_star_citizen_skills.py tests/test_gamelog.py tests/test_star_citizen_log_ships.py tests/test_star_citizen_ship_matching.py tests/test_star_citizen_gamelog_module.py tests/test_star_citizen_tracker_safety.py tests/test_uex.py tests/test_star_citizen_uex_module.py tests/test_star_citizen_uex_results.py tests/test_star_citizen_database.py tests/test_star_citizen_database_query.py tests/test_llm.py tests/test_app_lifecycle.py`
 
 ## Child DOX Index

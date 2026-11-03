@@ -74,8 +74,8 @@ VTOL Off => vtol + {deaktivieren} => Button29 => {DE} VTOL aus. | {EN} VTOL off.
 Autoland => autoland, land automatically, automatisch landen => Button30 hold => {DE} Autoland angefordert. | {EN} Autoland requested.
 
 # Services: "Hangar" or "Cargo" plus a call verb
-Request Landing => hangar + {call} => Button31 => {DE} Landeanfrage gestellt. | {EN} Landing request sent.
-Request Cargo Loading => cargo + {call} => Button32 => {DE} Cargo-Verladung angefordert. | {EN} Cargo loading requested.
+Request Landing => hangar + {call} => Button31 => {DE} Hangar-Anfrage übermittelt. | {EN} Hangar request transmitted.
+Request Cargo Loading => cargo + {call} => Button32 => {DE} Hangar-Anfrage übermittelt. | {EN} Hangar request transmitted.
 
 # Master modes
 Master Mode NAV => navigation mode, navigationsmodus => Button33 => {DE} NAV-Modus gewählt. | {EN} NAV mode selected.
