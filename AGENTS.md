@@ -81,6 +81,8 @@ Default section order:
 - `src/voxcomm/config.py` owns base configuration and persistence; `src/voxcomm/profiles.py` resolves profile-specific settings and permissions.
 - `src/voxcomm/app.py` owns the current Qt UI and application orchestration; provider modules own service integrations.
 - Settings and tray menus use the active system Qt style; the transparent overlay retains its separate styling.
+- Persist the overlay position after movement and restore it while any part intersects a screen; use a visible default if it is entirely off-screen.
+- Continue transcript updates from the text already displayed; do not clear or retype the user text or search announcements when an answer arrives.
 - The settings dialog uses the window title without a duplicate heading; native tabs fill the available width below the top margin and scroll pages preserve their style's tab background.
 - Profile selection and sub-tabs align horizontally with the footer; profile sub-tabs do not repeat their tab names as page headings. Retain meaningful subsection headings.
 - User-defined prompt text comes only from the user's profile configuration; never load or create separate persona or prompt files.

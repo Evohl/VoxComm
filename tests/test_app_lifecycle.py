@@ -23,7 +23,7 @@ from voxcomm.app import (
     SettingsDialog,
     configure_application, game_event_reply, game_reply_action, prefer_x11_on_wayland, transcript_segments,
 )
-from voxcomm.config import AppConfig, reply_override_key
+from voxcomm.config import AppConfig, load_config, reply_override_key, save_config
 from voxcomm.gamelog.facts import GameEvent, NAV_TARGET_SET, PILOT_LEFT, PILOT_TAKEN, QUANTUM_SIGNATURE_UNKNOWN, SHIP_ENTERED
 from voxcomm.theme import rgba, system_accent, system_surface
 
@@ -452,6 +452,52 @@ class ApplicationLifecycleTests(unittest.TestCase):
             overlay.tray_icon.hide()
             overlay.deleteLater()
 
+    def test_answer_continues_typing_without_replacing_visible_user_text(self):
+        app = QApplication.instance() or QApplication([])
+        with patch("voxcomm.app.PttListener"):
+            overlay = Overlay()
+            overlay._show_message("Thinking …", "You: Question?\n")
+            for _ in range(7):
+                overlay._type_next_character()
+            visible = overlay.transcript.toPlainText()
+            changes = QSignalSpy(overlay.transcript.document().contentsChange)
+
+            overlay._show_message("Ready · response generated locally", "You: Question?\nAI: Answer")
+            self.assertEqual(overlay.transcript.toPlainText(), visible)
+            self.assertEqual(overlay._typing_index, len(visible))
+            while overlay._type_timer.isActive():
+                overlay._type_next_character()
+
+            self.assertEqual(overlay.transcript.toPlainText(), "You: Question?\nAI: Answer")
+            self.assertGreater(changes.count(), 0)
+            self.assertTrue(all(changes.at(index)[1] == 0 for index in range(changes.count())))
+            overlay.listener.stop()
+            overlay.tray_icon.hide()
+            overlay.deleteLater()
+
+    def test_answer_keeps_visible_search_announcement(self):
+        app = QApplication.instance() or QApplication([])
+        with patch("voxcomm.app.PttListener"):
+            overlay = Overlay()
+            announcement = "You: Question?\nAI: Searching"
+            overlay._show_message("Thinking …", announcement)
+            while overlay._type_timer.isActive():
+                overlay._type_next_character()
+            changes = QSignalSpy(overlay.transcript.document().contentsChange)
+
+            overlay._show_message("Ready · response generated locally", announcement + "\nAnswer")
+            self.assertEqual(overlay.transcript.toPlainText(), announcement)
+            self.assertEqual(overlay._typing_index, len(announcement))
+            while overlay._type_timer.isActive():
+                overlay._type_next_character()
+
+            self.assertEqual(overlay.transcript.toPlainText(), announcement + "\nAnswer")
+            self.assertGreater(changes.count(), 0)
+            self.assertTrue(all(changes.at(index)[1] == 0 for index in range(changes.count())))
+            overlay.listener.stop()
+            overlay.tray_icon.hide()
+            overlay.deleteLater()
+
     def test_tray_click_toggles_recording_and_menu_contains_requested_actions(self):
         app = QApplication.instance() or QApplication([])
         with patch("voxcomm.app.PttListener"), patch("voxcomm.app.threading.Thread") as thread_class:
@@ -768,6 +814,33 @@ class ApplicationLifecycleTests(unittest.TestCase):
                 save_position.assert_called_once_with(180, 200)
                 overlay.listener.stop()
                 overlay.deleteLater()
+
+    def test_overlay_persists_moved_position_at_screen_edge(self):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {"XDG_CONFIG_HOME": root}):
+            save_config(AppConfig(overlay_hide_seconds=17))
+            with patch("voxcomm.app.PttListener"):
+                overlay = Overlay()
+                area = QGuiApplication.primaryScreen().availableGeometry()
+                position = QPoint(area.left() + 100, area.top() - 25)
+                overlay.move(position)
+                QTest.qWait(650)
+                position = overlay.pos()
+                stored = load_config()
+                self.assertEqual((stored.overlay_x, stored.overlay_y), (position.x(), position.y()))
+                self.assertEqual(stored.overlay_hide_seconds, 17)
+                overlay.listener.stop()
+                overlay.tray_icon.hide()
+                overlay.hide()
+                overlay.deleteLater()
+                app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+                restored = Overlay()
+                QTest.qWait(50)
+                self.assertEqual(restored.pos(), position)
+                restored.listener.stop()
+                restored.tray_icon.hide()
+                restored.deleteLater()
 
     def test_overlay_reset_button_returns_window_to_visible_default(self):
         app = QApplication.instance() or QApplication([])

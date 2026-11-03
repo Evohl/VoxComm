@@ -10,7 +10,7 @@ from collections import deque
 from datetime import datetime
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QPropertyAnimation, QRect, QSize, QTimer, Signal, Qt
-from PySide6.QtGui import QAction, QFont, QGuiApplication, QIcon, QPalette, QTextCharFormat
+from PySide6.QtGui import QAction, QFont, QGuiApplication, QIcon, QPalette, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFormLayout, QFrame, QGraphicsOpacityEffect, QGridLayout, QHeaderView,
     QHBoxLayout, QLabel, QInputDialog, QLineEdit, QMainWindow, QMenu, QMessageBox,
@@ -1913,16 +1913,18 @@ class Overlay(QMainWindow):
         text_format.setFontWeight(QFont.Weight.Bold if bold else QFont.Weight.Normal)
         return text_format
 
-    def _render_transcript(self, text: str, count: int):
-        self.transcript.clear()
+    def _render_transcript(self, text: str, start: int, end: int):
         cursor = self.transcript.textCursor()
-        remaining = count
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        offset = 0
         for chunk, kind in transcript_segments(text):
-            if remaining <= 0:
+            chunk_end = offset + len(chunk)
+            if offset >= end:
                 break
-            piece = chunk[:remaining]
-            remaining -= len(piece)
-            cursor.insertText(piece, self._transcript_formats[kind])
+            piece = chunk[max(0, start - offset):min(len(chunk), end - offset)]
+            if piece:
+                cursor.insertText(piece, self._transcript_formats[kind])
+            offset = chunk_end
 
     def _ptt_event(self, kind: str, text: str):
         if kind == "error":
@@ -2143,9 +2145,10 @@ class Overlay(QMainWindow):
             return
         self._fade_animation.stop()
         self._text_opacity.setOpacity(1)
+        if not self._typing_text or not text.startswith(self._typing_text):
+            self.transcript.clear()
+            self._typing_index = 0
         self._typing_text = text
-        self._typing_index = 0
-        self.transcript.clear()
         self._fit_to_content()
         self._hide_timer.stop()
         self._type_timer.start()
@@ -2166,8 +2169,9 @@ class Overlay(QMainWindow):
         self._fit_to_content()
 
     def _type_next_character(self):
+        start = self._typing_index
         self._typing_index = min(self._typing_index + 1, len(self._typing_text))
-        self._render_transcript(self._typing_text, self._typing_index)
+        self._render_transcript(self._typing_text, start, self._typing_index)
         self._fit_to_content()
         if self._typing_index >= len(self._typing_text):
             self._type_timer.stop()
@@ -2199,8 +2203,7 @@ class Overlay(QMainWindow):
             saved = QPoint(self.config.overlay_x, self.config.overlay_y)
             window_rect = QRect(saved, self.size())
             for screen in screens:
-                visible = screen.availableGeometry().intersected(window_rect)
-                if visible.width() >= min(80, window_rect.width()) and visible.height() >= min(40, window_rect.height()):
+                if screen.geometry().intersects(window_rect):
                     self.move(saved)
                     return
         primary = QGuiApplication.primaryScreen() or screens[0]
